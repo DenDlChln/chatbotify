@@ -79,4 +79,22 @@ async def handle_order(message: types.Message):
 
 if __name__ == '__main__':
     print("🚀 ChatBotify aiogram LIVE!")
-    executor.start_polling(dp, skip_updates=True)
+   import os
+from aiogram import executor
+
+WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
+WEBHOOK_URL = f"https://chatbotify.onrender.com{WEBHOOK_PATH}"
+
+async def on_startup(dp):
+    bot = Bot(token=BOT_TOKEN)
+    await bot.set_webhook(WEBHOOK_URL)
+    print("✅ Webhook activated!")
+
+if __name__ == '__main__':
+    executor.start_webhook(
+        dp,
+        WEBHOOK_PATH,
+        on_startup=on_startup,
+        host="0.0.0.0", 
+        port=int(os.getenv('PORT', 10000))
+    )
