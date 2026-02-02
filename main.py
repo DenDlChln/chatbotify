@@ -9,28 +9,33 @@ from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 
-# ✅ Встроенный config (НЕ нужен config.py)
+# ✅ ИСПРАВЛЕННЫЙ CONFIG (масштабный тест)
 CAFE = {
-    "name": "CafeBotify Demo ☕",
-    "phone": "8 (861) 123-45-67",
-    "admin_chat_id": 1471275603,
-    "work_hours": [18, 22],
+    "name": "Кофейня «Уют» ☕",
+    "phone": "+7 991 079-58-37",
+    "admin_chat_id": 1471275603,  # ✅ ТВОЙ ЛИЧНЫЙ ID!
+    "work_hours": [9, 21],        # ✅ Массив [start, end]!
     "menu": {
-        "☕ Кофе": 200,
-        "🍵 Чай": 150,
-        "🥧 Пирог": 100
+        "☕ Капучино": 250,
+        "🥛 Латте": 270,
+        "🍵 Чай": 180,
+        "⚡ Эспрессо": 200,
+        "☕ Американо": 300,
+        "🍫 Мокачино": 230,
+        "🤍 Раф": 400,
+        "🧊 Раф со льдом": 370
     }
 }
 
 logging.basicConfig(level=logging.INFO)
 load_dotenv()
-TOKEN = os.getenv("TELEGRAM_TOKEN")
+TOKEN = os.getenv("TELEGRAM_TOKEN")  # ✅ Токен ИЗ .env!
 
 bot = Bot(token=TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(bot, storage=storage)
 
-# ГЛАВНОЕ МЕНЮ
+# ГЛАВНОЕ МЕНЮ (автогенерация из CAFE["menu"])
 MAIN_MENU = ReplyKeyboardMarkup(resize_keyboard=True)
 for item, price in CAFE["menu"].items():
     MAIN_MENU.add(KeyboardButton(f"{item} {price}₽"))
@@ -132,7 +137,7 @@ async def confirm_order(message: types.Message, state: FSMContext):
     )
 
     await message.reply(
-        "🎉 **Заказ принят!**\n\n⏰ Готовим ☕\n📞 {CAFE['phone']}",
+        "🎉 **Заказ принят!**\n\n⏰ Готовим ☕\n📞 " + CAFE['phone'],
         reply_markup=MAIN_MENU,
         parse_mode='Markdown'
     )
@@ -202,7 +207,7 @@ async def finish_booking(message: types.Message, state: FSMContext):
     people = people_map[message.text]
     data = await state.get_data()
 
-    # ✅ АДМИН ПОЛУЧАЕТ ЗАЯВКУ
+    # АДМИН ПОЛУЧАЕТ ЗАЯВКУ
     await bot.send_message(
         CAFE["admin_chat_id"],
         f"📋 **НОВАЯ ЗАЯВКА НА БРОНЬ** `{CAFE['name']}`\n\n"
@@ -213,7 +218,7 @@ async def finish_booking(message: types.Message, state: FSMContext):
         parse_mode='Markdown'
     )
 
-    # ✅ КЛИЕНТ ПОЛУЧАЕТ (БЕЗ ответственности)
+    # КЛИЕНТ ПОЛУЧАЕТ (БЕЗ ответственности)
     await message.reply(
         f"✅ **Заявка на бронь принята!**\n\n"
         f"Мы свяжемся с Вами для подтверждения в течение 15 минут.\n\n"
@@ -262,4 +267,3 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=int(os.getenv("PORT", 10000))
     )
-
