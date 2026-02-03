@@ -9,12 +9,11 @@ from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 
-# ✅ ИСПРАВЛЕННЫЙ CONFIG (масштабный тест)
 CAFE = {
     "name": "Кофейня «Уют» ☕",
     "phone": "+7 991 079-58-37",
-    "admin_chat_id": 1471275603,  # ✅ ТВОЙ ЛИЧНЫЙ ID!
-    "work_hours": [9, 21],        # ✅ Массив [start, end]!
+    "admin_chat_id": 1471275603,
+    "work_hours": ,
     "menu": {
         "☕ Капучино": 250,
         "🥛 Латте": 270,
@@ -29,20 +28,17 @@ CAFE = {
 
 logging.basicConfig(level=logging.INFO)
 load_dotenv()
-TOKEN = os.getenv("TELEGRAM_TOKEN")  # ✅ Токен ИЗ .env!
-
+TOKEN = os.getenv("TELEGRAM_TOKEN")
 bot = Bot(token=TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(bot, storage=storage)
 
-# ГЛАВНОЕ МЕНЮ (автогенерация из CAFE["menu"])
 MAIN_MENU = ReplyKeyboardMarkup(resize_keyboard=True)
 for item, price in CAFE["menu"].items():
     MAIN_MENU.add(KeyboardButton(f"{item} {price}₽"))
 MAIN_MENU.add(KeyboardButton("📋 Бронь столика"))
 MAIN_MENU.add(KeyboardButton("❓ Помощь"))
 
-# FSM СОСТОЯНИЯ
 class OrderForm(StatesGroup):
     waiting_quantity = State()
     waiting_confirm = State()
@@ -51,7 +47,6 @@ class BookingForm(StatesGroup):
     waiting_datetime = State()
     waiting_people = State()
 
-# /START
 @dp.message_handler(commands=["start"])
 async def start(message: types.Message):
     await message.reply(
@@ -60,7 +55,6 @@ async def start(message: types.Message):
         parse_mode='Markdown'
     )
 
-# ЗАКАЗЫ
 @dp.message_handler(lambda m: any(m.text.startswith(name) for name in CAFE["menu"]))
 async def start_order(message: types.Message, state: FSMContext):
     parts = message.text.rsplit(" ", 1)
@@ -68,7 +62,7 @@ async def start_order(message: types.Message, state: FSMContext):
         await message.reply("Выберите блюдо из меню ☝️", reply_markup=MAIN_MENU)
         return
     
-    item_name = parts[0]
+    item_name = parts
     if item_name not in CAFE["menu"]:
         await message.reply("Выберите блюдо из меню ☝️", reply_markup=MAIN_MENU)
         return
@@ -126,10 +120,9 @@ async def confirm_order(message: types.Message, state: FSMContext):
 
     data = await state.get_data()
     
-    # УВЕДОМЛЕНИЕ АДМИНУ ☕
     await bot.send_message(
         CAFE["admin_chat_id"],
-        f"☕ **НОВЫЙ ЗАКАЗ** `{CAFE['name']}`\n\n"
+        f"☕ **НОВЫЙ ЗАКАЗ** {CAFE['name']}\n\n"
         f"**{data['item']}** × {data['quantity']}\n"
         f"💰 **{data['total']}₽**\n\n"
         f"👤 @{message.from_user.username or message.from_user.id}",
@@ -143,12 +136,11 @@ async def confirm_order(message: types.Message, state: FSMContext):
     )
     await state.finish()
 
-# БРОНЬ СТОЛИКА 📋
 @dp.message_handler(lambda m: m.text == "📋 Бронь столика")
 async def book_start(message: types.Message, state: FSMContext):
     start_h, end_h = CAFE["work_hours"]
     await message.reply(
-        f"**📅 БРОНЬ СТОЛИКА** `{CAFE['name']}`\n\n"
+        f"**📅 БРОНЬ СТОЛИКА** {CAFE['name']}\n\n"
         f"`ДД.ММ ЧЧ:ММ`\n"
         f"**Пример:** `15.02 19:00`\n\n"
         f"🕐 Работаем: **{start_h}:00–{end_h}:00**",
@@ -207,10 +199,9 @@ async def finish_booking(message: types.Message, state: FSMContext):
     people = people_map[message.text]
     data = await state.get_data()
 
-    # АДМИН ПОЛУЧАЕТ ЗАЯВКУ
     await bot.send_message(
         CAFE["admin_chat_id"],
-        f"📋 **НОВАЯ ЗАЯВКА НА БРОНЬ** `{CAFE['name']}`\n\n"
+        f"📋 **НОВАЯ ЗАЯВКА НА БРОНЬ** {CAFE['name']}\n\n"
         f"🕐 **{data['dt'].strftime('%d.%m %H:%M')}**\n"
         f"👥 **{people} человек**\n"
         f"👤 @{message.from_user.username or message.from_user.id}\n\n"
@@ -218,7 +209,6 @@ async def finish_booking(message: types.Message, state: FSMContext):
         parse_mode='Markdown'
     )
 
-    # КЛИЕНТ ПОЛУЧАЕТ (БЕЗ ответственности)
     await message.reply(
         f"✅ **Заявка на бронь принята!**\n\n"
         f"Мы свяжемся с Вами для подтверждения в течение 15 минут.\n\n"
@@ -228,7 +218,6 @@ async def finish_booking(message: types.Message, state: FSMContext):
     )
     await state.finish()
 
-# ПОМОЩЬ
 @dp.message_handler(lambda m: m.text == "❓ Помощь")
 async def help_handler(message: types.Message):
     start_h, end_h = CAFE["work_hours"]
@@ -242,7 +231,6 @@ async def help_handler(message: types.Message):
         parse_mode='Markdown'
     )
 
-# FALLBACK
 @dp.message_handler()
 async def fallback(message: types.Message):
     await message.reply(
@@ -251,7 +239,6 @@ async def fallback(message: types.Message):
         parse_mode='Markdown'
     )
 
-# WEBHOOK для Render
 WEBHOOK_PATH = f"/webhook/{TOKEN}"
 WEBHOOK_URL = f"https://chatbotify-2tjd.onrender.com{WEBHOOK_PATH}"
 
@@ -267,5 +254,3 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=int(os.getenv("PORT", 10000))
     )
-```python
-# FIX DEPLOY
