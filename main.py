@@ -25,7 +25,9 @@ PORT = int(os.environ.get("PORT", 10000))
 HOST = "0.0.0.0"
 WEBHOOK_URL = "https://chatbotify-2tjd.onrender.com/webhook"
 
-# Глобальные объекты
+# ========================================
+# ГЛОБАЛЬНЫЕ ОБЪЕКТЫ
+# ========================================
 bot = Bot(token=BOT_TOKEN, parse_mode=types.ParseMode.HTML)
 storage = MemoryStorage()
 dp = Dispatcher(bot, storage=storage)
@@ -183,16 +185,22 @@ async def send_order_to_admin(order_data):
         logger.error(f"❌ Админ ошибка: {e}")
 
 # ========================================
-# WEBHOOK ОБРАБОТЧИК
+# ✅ WEBHOOK С BOT CONTEXT (v6.0 ФИНАЛЬНО!)
 # ========================================
 async def webhook_handler(request):
     try:
         logger.info("🔥 WEBHOOK ПОЛУЧЕН")
         
+        # Читаем JSON от Telegram
         update = await request.json()
         update_id = update.get('update_id', 'unknown')
         logger.info(f"📨 Update ID: {update_id}")
         
+        # ✅ v6.0 РЕШЕНИЕ: устанавливаем bot и dispatcher в context
+        Bot.set_current(bot)
+        Dispatcher.set_current(dp)
+        
+        # Обрабатываем через aiogram dispatcher
         await dp.process_update(types.Update(**update))
         
         logger.info("✅ WEBHOOK ОБРАБОТАН")
@@ -206,24 +214,27 @@ async def healthcheck(request):
     return web.Response(text="CafeBotify LIVE ✅", status=200)
 
 # ========================================
-# STARTUP/SHUTDOWN (ИСПРАВЛЕН)
+# STARTUP/SHUTDOWN
 # ========================================
 async def on_startup(app):
     logger.info("🚀 ЗАПУСК BOT")
     logger.info(f"👑 ADMIN: {ADMIN_ID}")
     logger.info(f"📱 PHONE: {CAFE_PHONE}")
     
+    # Очищаем старые webhooks
     await bot.delete_webhook(drop_pending_updates=True)
     logger.info("🧹 Webhook очищен")
     
+    # Устанавливаем webhook
     await bot.set_webhook(WEBHOOK_URL)
     webhook_info = await bot.get_webhook_info()
     logger.info(f"✅ WEBHOOK: {webhook_info.url}")
     
+    # Тестовое сообщение админу
     try:
         await bot.send_message(
             ADMIN_ID,
-            "🎉 <b>CafeBotify LIVE!</b>\n\n"
+            "🎉 <b>CafeBotify v6.0 LIVE!</b>\n\n"
             f"🌐 {WEBHOOK_URL}\n"
             "✅ Напишите /start для теста!"
         )
@@ -234,25 +245,29 @@ async def on_startup(app):
 async def on_shutdown(app):
     logger.info("🛑 ОСТАНОВКА")
     await bot.delete_webhook()
-    # ✅ ИСПРАВЛЕНО: убираем session.close()
     await dp.storage.close()
 
 # ========================================
-# AIOHTTP ПРИЛОЖЕНИЕ
+# СОЗДАНИЕ AIOHTTP ПРИЛОЖЕНИЯ
 # ========================================
 def create_app():
     app = web.Application()
+    
+    # Роуты
     app.router.add_post("/webhook", webhook_handler)
     app.router.add_get("/", healthcheck)
+    
+    # Startup/Shutdown обработчики
     app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)
+    
     return app
 
 # ========================================
-# ЗАПУСК
+# ГЛАВНАЯ ФУНКЦИЯ
 # ========================================
 if __name__ == '__main__':
-    logger.info("🎬 CAFEBOTIFY v5.1 ✅")
+    logger.info("🎬 ЗАПУСК CAFEBOTIFY v6.0")
     logger.info(f"🌐 {HOST}:{PORT}")
     
     app = create_app()
