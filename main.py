@@ -183,18 +183,16 @@ async def send_order_to_admin(order_data):
         logger.error(f"❌ Админ ошибка: {e}")
 
 # ========================================
-# WEBHOOK ОБРАБОТЧИК (ИСПРАВЛЕН)
+# WEBHOOK ОБРАБОТЧИК
 # ========================================
 async def webhook_handler(request):
     try:
         logger.info("🔥 WEBHOOK ПОЛУЧЕН")
         
-        # Читаем JSON от Telegram
         update = await request.json()
         update_id = update.get('update_id', 'unknown')
         logger.info(f"📨 Update ID: {update_id}")
         
-        # Обрабатываем через aiogram dispatcher
         await dp.process_update(types.Update(**update))
         
         logger.info("✅ WEBHOOK ОБРАБОТАН")
@@ -207,27 +205,21 @@ async def webhook_handler(request):
 async def healthcheck(request):
     return web.Response(text="CafeBotify LIVE ✅", status=200)
 
-async def test_endpoint(request):
-    return web.Response(text="TEST OK", status=200)
-
 # ========================================
-# STARTUP/SHUTDOWN
+# STARTUP/SHUTDOWN (ИСПРАВЛЕН)
 # ========================================
 async def on_startup(app):
     logger.info("🚀 ЗАПУСК BOT")
     logger.info(f"👑 ADMIN: {ADMIN_ID}")
     logger.info(f"📱 PHONE: {CAFE_PHONE}")
     
-    # Очищаем старые webhooks
     await bot.delete_webhook(drop_pending_updates=True)
     logger.info("🧹 Webhook очищен")
     
-    # Устанавливаем webhook
     await bot.set_webhook(WEBHOOK_URL)
     webhook_info = await bot.get_webhook_info()
     logger.info(f"✅ WEBHOOK: {webhook_info.url}")
     
-    # Тестовое сообщение админу
     try:
         await bot.send_message(
             ADMIN_ID,
@@ -242,31 +234,25 @@ async def on_startup(app):
 async def on_shutdown(app):
     logger.info("🛑 ОСТАНОВКА")
     await bot.delete_webhook()
+    # ✅ ИСПРАВЛЕНО: убираем session.close()
     await dp.storage.close()
-    await bot.session.close()
 
 # ========================================
-# СОЗДАНИЕ AIOHTTP ПРИЛОЖЕНИЯ
+# AIOHTTP ПРИЛОЖЕНИЕ
 # ========================================
 def create_app():
     app = web.Application()
-    
-    # Роуты
     app.router.add_post("/webhook", webhook_handler)
     app.router.add_get("/", healthcheck)
-    app.router.add_get("/test", test_endpoint)
-    
-    # Startup/Shutdown обработчики
     app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)
-    
     return app
 
 # ========================================
-# ГЛАВНАЯ ФУНКЦИЯ
+# ЗАПУСК
 # ========================================
 if __name__ == '__main__':
-    logger.info("🎬 ЗАПУСК CAFEBOTIFY v5.0")
+    logger.info("🎬 CAFEBOTIFY v5.1 ✅")
     logger.info(f"🌐 {HOST}:{PORT}")
     
     app = create_app()
