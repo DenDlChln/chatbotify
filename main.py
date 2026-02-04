@@ -1,17 +1,21 @@
 import os
 import json
 import logging
-import asyncio
 from aiogram import Bot, Dispatcher, types, executor
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiohttp import web
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 # ========================================
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# ✅ МОСКОВСКОЕ ВРЕМЯ (UTC+3)
+MSK_TZ = timezone(timedelta(hours=3))
+WORK_START = 9
+WORK_END = 21
 
 # ========================================
 def load_config():
@@ -23,7 +27,6 @@ def load_config():
                 'name': config.get('name', 'Кофейня «Уют» ☕'),
                 'phone': config.get('phone', '+7 989 273-67-56'),
                 'admin_chat_id': config.get('admin_chat_id', 1471275603),
-                'work_hours': config.get('work_hours', [9, 21]),
                 'menu': config.get('menu', {
                     "☕ Капучино": 250,
                     "🥛 Латте": 270,
@@ -36,13 +39,7 @@ def load_config():
             "name": "Кофейня «Уют» ☕",
             "phone": "+7 989 273-67-56",
             "admin_chat_id": 1471275603,
-            "work_hours": [9, 21],
-            "menu": {
-                "☕ Капучино": 250,
-                "🥛 Латте": 270,
-                "🍵 Чай": 180,
-                "⚡ Эспрессо": 200
-            }
+            "menu": {"☕ Капучино": 250, "🥛 Латте": 270, "🍵 Чай": 180, "⚡ Эспрессо": 200}
         }
 
 cafe_config = load_config()
@@ -50,8 +47,6 @@ CAFE_NAME = cafe_config["name"]
 CAFE_PHONE = cafe_config["phone"]
 ADMIN_ID = int(cafe_config["admin_chat_id"])
 MENU = dict(cafe_config["menu"])
-WORK_START = int(cafe_config["work_hours"][0])
-WORK_END = int(cafe_config["work_hours"][1])
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 WEBAPP_HOST = os.getenv('WEBAPP_HOST', 'chatbotify-2tjd.onrender.com')
@@ -69,55 +64,59 @@ class OrderStates(StatesGroup):
     waiting_for_confirmation = State()
 
 # ========================================
+def get_moscow_time():
+    """🕐 Текущее время по Москве (MSK UTC+3)"""
+    return datetime.now(MSK_TZ)
+
 def is_cafe_open():
-    now = datetime.now().hour
-    return WORK_START <= now < WORK_END
+    """✅ Работает ли кофейня (9:00-21:00 MSK)"""
+    msk_hour = get_moscow_time().hour
+    return WORK_START <= msk_hour < WORK_END
 
 def get_work_status():
-    now = datetime.now()
-    current_hour = now.hour
+    """📊 Статус работы по Москве"""
+    msk_hour = get_moscow_time().hour
     if is_cafe_open():
-        time_left = WORK_END - current_hour
+        time_left = WORK_END - msk_hour
         return f"🟢 <b>Открыто</b> (ещё {time_left} ч.)"
     else:
         next_open = f"{WORK_START}:00"
-        return f"🔴 <b>Закрыто</b>\n🕐 Открываемся: {next_open}"
+        return f"🔴 <b>Закрыто</b>\n🕐 Открываемся: {next_open} (МСК)"
 
 def get_closed_message():
+    """🙏 Вежливое закрытие"""
     return (
         f"🔒 <b>{CAFE_NAME} сейчас закрыто!</b>\n\n"
         f"⏰ {get_work_status()}\n\n"
-        f"📞 <b>Связаться с нами:</b>\n"
-        f"<code>{CAFE_PHONE}</code>\n\n"
-        f"☕ <i>Ждём вас в рабочее время!</i>"
+        f"📞 <b>Связаться:</b>\n<code>{CAFE_PHONE}</code>\n\n"
+        f"☕ <i>Ждём вас с {WORK_START}:00 до {WORK_END}:00 (МСК)!</i>"
     )
 
 def get_menu_keyboard():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
-    for drink in MENU.keys():
-        kb.add(drink)
+    for drink in MENU: kb.add(drink)
     kb.row("📞 Позвонить", "⏰ Часы работы")
     return kb
 
 def get_quantity_keyboard():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True, row_width=3)
-    kb.add("1️⃣", "2️⃣", "3️⃣")
-    kb.add("4️⃣", "5️⃣", "🔙 Отмена")
+    kb.add("1️⃣", "2️⃣", "3️⃣").add("4️⃣", "5️⃣", "🔙 Отмена")
     return kb
 
 def get_confirm_keyboard():
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True, row_width=2)
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     kb.add("✅ Подтвердить", "🔙 Меню")
     return kb
 
 # ========================================
-# Все handlers (БЕЗ ИЗМЕНЕНИЙ из v8.19+)
 @dp.message_handler(commands=['start', 'help'])
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.finish()
-    logger.info(f"👤 /start от {message.from_user.id}")
+    msk_time = get_moscow_time().strftime("%H:%M")
+    logger.info(f"👤 /start от {message.from_user.id} | MSK: {msk_time}")
     await message.answer(
         f"<b>{CAFE_NAME}</b>\n\n"
+        f"🕐 <i>Московское время: {msk_time}</i>\n"
         f"🏪 {get_work_status()}\n\n"
         f"☕ <b>Выберите напиток:</b>",
         reply_markup=get_menu_keyboard()
@@ -169,8 +168,7 @@ async def process_quantity(message: types.Message, state: FSMContext):
                 reply_markup=get_confirm_keyboard()
             )
             return
-    except:
-        pass
+    except: pass
     
     data = await state.get_data()
     await message.answer(
@@ -193,8 +191,10 @@ async def process_confirmation(message: types.Message, state: FSMContext):
             'total': data['total']
         }
         
+        msk_time = get_moscow_time().strftime("%H:%M")
         await message.answer(
             f"🎉 <b>ЗАКАЗ #{message.from_user.id} ПРИНЯТ!</b> ☕✨\n\n"
+            f"🕐 <i>Время MSK: {msk_time}</i>\n"
             f"🥤 <b>{data['drink']}</b>\n"
             f"📊 {data['quantity']} порций\n"
             f"💰 <b>{data['total']} ₽</b>\n\n"
@@ -210,8 +210,10 @@ async def process_confirmation(message: types.Message, state: FSMContext):
     await message.answer("🔙 В меню ☕", reply_markup=get_menu_keyboard())
 
 async def send_order_to_admin(order_data):
+    msk_time = get_moscow_time().strftime("%H:%M")
     text = (
         f"🔔 <b>🚨 НОВЫЙ ЗАКАЗ #{order_data['user_id']}</b> ☕\n\n"
+        f"🕐 <i>MSK: {msk_time}</i>\n"
         f"👤 <b>{order_data['first_name']}</b>\n"
         f"🆔 <code>{order_data['user_id']}</code>\n\n"
         f"🥤 <b>{order_data['drink']}</b>\n"
@@ -233,15 +235,19 @@ async def call_phone(message: types.Message):
 
 @dp.message_handler(lambda m: m.text == "⏰ Часы работы")
 async def work_hours(message: types.Message):
+    msk_now = get_moscow_time().strftime("%H:%M")
     await message.answer(
-        f"⏰ <b>{WORK_START}:00 - {WORK_END}:00</b>\n\n{get_work_status()}\n\n📞 <code>{CAFE_PHONE}</code>",
+        f"⏰ <b>{WORK_START}:00 - {WORK_END}:00 (МСК)</b>\n\n"
+        f"🕐 Сейчас: {msk_now}\n"
+        f"{get_work_status()}\n\n"
+        f"📞 <code>{CAFE_PHONE}</code>",
         reply_markup=get_menu_keyboard()
     )
 
 @dp.message_handler()
 async def echo(message: types.Message, state: FSMContext):
     await state.finish()
-    logger.info(f"❓ Неизвестное: {message.text} от {message.from_user.id}")
+    logger.info(f"❓ Неизвестное: {message.text}")
     await message.answer(
         f"❓ <b>{CAFE_NAME}</b>\n\n"
         f"{get_work_status()}\n\n"
@@ -251,30 +257,26 @@ async def echo(message: types.Message, state: FSMContext):
 
 # ========================================
 async def on_startup(dp):
+    msk_time = get_moscow_time().strftime("%H:%M")
     await bot.delete_webhook(drop_pending_updates=True)
     await asyncio.sleep(1)
     await bot.set_webhook(WEBHOOK_URL)
     info = await bot.get_webhook_info()
     logger.info(f"✅ WEBHOOK: {info.url}")
-    logger.info(f"🚀 v8.19++ LIVE — {CAFE_NAME}")
+    logger.info(f"🚀 v8.19+++ MSK — {CAFE_NAME} | Сейчас MSK: {msk_time}")
 
 async def on_shutdown(dp):
     await bot.delete_webhook()
     await dp.storage.close()
-    logger.info("🛑 v8.19++ STOP")
+    logger.info("🛑 STOP")
 
-# ========================================
 async def healthcheck(request):
-    """✅ RENDER HEALTHCHECK — убирает 404!"""
-    logger.info("🏥 Healthcheck OK")
-    return web.Response(text="CafeBotify v8.19++ LIVE ✅", status=200)
+    return web.Response(text="CafeBotify v8.19+++ LIVE ✅", status=200)
 
 # ========================================
 if __name__ == '__main__':
-    logger.info(f"🎬 v8.19++ WEBHOOK — {CAFE_NAME}")
-    
     app = web.Application()
-    app.router.add_get('/', healthcheck)  # ✅ Healthcheck!
+    app.router.add_get('/', healthcheck)
     
     executor.start_webhook(
         dispatcher=dp,
