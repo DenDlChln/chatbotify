@@ -6,8 +6,7 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
-from aiogram.dispatcher.webhook import get_new_configured_app
-from aiohttp import web, Request, StreamResponse
+from aiohttp import web  # ✅ Только web!
 from datetime import datetime
 
 # ========================================
@@ -74,7 +73,6 @@ class OrderStates(StatesGroup):
     waiting_for_confirmation = State()
 
 # ========================================
-# Клавиатуры и утилиты (БЕЗ ИЗМЕНЕНИЙ)
 def is_cafe_open():
     now = datetime.now().hour
     return WORK_START <= now < WORK_END
@@ -108,7 +106,6 @@ def get_confirm_keyboard():
     return kb
 
 # ========================================
-# Все handlers БЕЗ ИЗМЕНЕНИЙ (копируй из предыдущего)
 @dp.message_handler(commands=['start', 'help'])
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.finish()
@@ -252,67 +249,88 @@ async def echo(message: types.Message, state: FSMContext):
     )
 
 # ========================================
-# ✅ ПРАВИЛЬНЫЙ WEBHOOK HANDLER
-async def webhook_handler(request: Request) -> StreamResponse:
-    """Правильный aiohttp webhook handler"""
+async def webhook_handler(request):
+    """✅ Простой webhook handler для Python 3.11"""
     logger.info(f"📨 Telegram POST {request.path}")
     
-    # Обработка Telegram webhook
-    updates = await request.post()
-    logger.info(f"📨 Получено {len(updates)} updates")
-    
-    # Обработка обновлений
-    for update in updates:
-        await dp.process_update(update)
+    try:
+        # Получаем JSON от Telegram
+        body = await request.json()
+        logger.info(f"📨 Получено: {len(body) if isinstance(body, list) else 1} updates")
+        
+        # Обрабатываем обновления
+        if isinstance(body, list):
+            for update in body:
+                await dp.process_update(update)
+        else:
+            await dp.process_update(body)
+            
+    except Exception as e:
+        logger.error(f"❌ Webhook error: {e}")
     
     return web.Response(text="OK")
 
-async def on_startup(_):
-    """Инициализация"""
+async def on_startup(app):
+    """Инициализация webhook"""
     try:
         await bot.delete_webhook(drop_pending_updates=True)
+        logger.info("🧹 Старый webhook удалён")
         await asyncio.sleep(1)
+        
         await bot.set_webhook(WEBHOOK_URL)
         info = await bot.get_webhook_info()
-        logger.info(f"✅ WEBHOOK: {info.url} (pending: {info.pending_update_count})")
-        logger.info(f"🚀 v8.26 LIVE — {CAFE_NAME}")
+        
+        logger.info(f"✅ WEBHOOK: {info.url}")
+        logger.info(f"📊 Pending: {info.pending_update_count}")
+        logger.info(f"🚀 v8.27 LIVE — {CAFE_NAME}")
+        
     except Exception as e:
-        logger.error(f"❌ Webhook error: {e}")
+        logger.error(f"❌ Webhook setup: {e}")
 
-async def on_shutdown(_):
+async def on_shutdown(app):
     """Очистка"""
     await bot.delete_webhook()
     await dp.storage.close()
-    logger.info("🛑 v8.26 STOP")
+    logger.info("🛑 v8.27 STOP")
 
-async def healthcheck(request: Request):
+async def healthcheck(request):
     """Render healthcheck"""
     logger.info("🏥 Healthcheck OK")
-    return web.Response(text="CafeBotify v8.26 LIVE ✅", status=200)
+    return web.Response(text="CafeBotify v8.27 LIVE ✅", status=200)
 
 # ========================================
 async def main():
     """Главная функция"""
-    logger.info(f"🎬 v8.26 CAFEBOTIFY — {CAFE_NAME}")
+    logger.info(f"🎬 v8.27 CAFEBOTIFY — {CAFE_NAME}")
     logger.info(f"🌐 HOST: {WEBAPP_HOST}:{WEBAPP_PORT}")
+    logger.info(f"🎯 PATH: {WEBHOOK_PATH}")
     
+    # Создаём AIOHTTP app
     app = web.Application()
     app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)
     
-    # ✅ ПРАВИЛЬНАЯ регистрация handlers
-    app.router.add_post(WEBHOOK_PATH, webhook_handler)  # ← ПРЯМОЙ HANDLER!
+    # ✅ Регистрируем handlers
+    app.router.add_post(WEBHOOK_PATH, webhook_handler)
     app.router.add_get('/', healthcheck)
     
+    # Запуск сервера
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', WEBAPP_PORT)
     await site.start()
     
-    logger.info(f"🌐 Server 0.0.0.0:{WEBAPP_PORT}")
+    logger.info(f"🌐 Server: 0.0.0.0:{WEBAPP_PORT}")
     logger.info(f"✅ Готов к POST {WEBHOOK_PATH}")
     
+    # Держим живым
     await asyncio.Event().wait()
 
+# ========================================
 if __name__ == '__main__':
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("👋 Остановка по Ctrl+C")
+    except Exception as e:
+        logger.error(f"💥 Ошибка: {e}")
