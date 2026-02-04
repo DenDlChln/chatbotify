@@ -1,7 +1,7 @@
 import os
 import json
 import logging
-import asyncio  # ✅ ФИКС!
+import asyncio
 from aiogram import Bot, Dispatcher, types, executor
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher import FSMContext
@@ -20,6 +20,7 @@ WORK_END = 21
 
 # ========================================
 def load_config():
+    """Загрузка конфигурации кофейни"""
     try:
         with open('config.json', 'r', encoding='utf-8') as f:
             data = json.load(f)
@@ -84,20 +85,32 @@ def get_work_status():
         next_open = f"{WORK_START}:00"
         return f"🔴 <b>Закрыто</b>\n🕐 Открываемся: {next_open} (МСК)"
 
+def get_menu_keyboard():
+    """✅ ПОЛНОЕ МЕНЮ — только в рабочее время"""
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
+    for drink in MENU: 
+        kb.add(drink)
+    kb.row("📞 Позвонить", "⏰ Часы работы")
+    return kb
+
+def get_info_keyboard():
+    """✅ ТОЛЬКО ИНФО — в нерабочее время"""
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    kb.row("📞 Позвонить", "⏰ Часы работы")
+    return kb
+
 def get_closed_message():
-    """🙏 Вежливое закрытие"""
+    """🙏 Закрытие с МЕНЮ + До скорой встречи!"""
+    menu_text = "• " + " | ".join([f"<b>{drink}</b> {MENU[drink]}₽" for drink in MENU])
+    
     return (
         f"🔒 <b>{CAFE_NAME} сейчас закрыто!</b>\n\n"
         f"⏰ {get_work_status()}\n\n"
+        f"☕ <b>Наше меню:</b>\n"
+        f"{menu_text}\n\n"
         f"📞 <b>Связаться:</b>\n<code>{CAFE_PHONE}</code>\n\n"
-        f"☕ <i>Ждём вас с {WORK_START}:00 до {WORK_END}:00 (МСК)!</i>"
+        f"✨ <i>До скорой встречи!</i>"
     )
-
-def get_menu_keyboard():
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
-    for drink in MENU: kb.add(drink)
-    kb.row("📞 Позвонить", "⏰ Часы работы")
-    return kb
 
 def get_quantity_keyboard():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True, row_width=3)
@@ -115,20 +128,31 @@ async def cmd_start(message: types.Message, state: FSMContext):
     await state.finish()
     msk_time = get_moscow_time().strftime("%H:%M")
     logger.info(f"👤 /start от {message.from_user.id} | MSK: {msk_time}")
-    await message.answer(
-        f"<b>{CAFE_NAME}</b>\n\n"
-        f"🕐 <i>Московское время: {msk_time}</i>\n"
-        f"🏪 {get_work_status()}\n\n"
-        f"☕ <b>Выберите напиток:</b>",
-        reply_markup=get_menu_keyboard()
-    )
+    
+    if is_cafe_open():
+        await message.answer(
+            f"<b>{CAFE_NAME}</b>\n\n"
+            f"🕐 <i>Московское время: {msk_time}</i>\n"
+            f"🏪 {get_work_status()}\n\n"
+            f"☕ <b>Выберите напиток:</b>",
+            reply_markup=get_menu_keyboard()
+        )
+    else:
+        await message.answer(
+            get_closed_message(),
+            reply_markup=get_info_keyboard()
+        )
 
 @dp.message_handler(lambda m: m.text in MENU)
 async def drink_selected(message: types.Message, state: FSMContext):
+    """🎯 Напитки — БЛОКИРУЕТСЯ в нерабочее время"""
     logger.info(f"🥤 {message.text} от {message.from_user.id}")
     
     if not is_cafe_open():
-        await message.answer(get_closed_message(), reply_markup=get_menu_keyboard())
+        await message.answer(
+            get_closed_message(),
+            reply_markup=get_info_keyboard()
+        )
         return
     
     drink = message.text
@@ -149,7 +173,10 @@ async def process_quantity(message: types.Message, state: FSMContext):
     
     if message.text == "🔙 Отмена":
         await state.finish()
-        await message.answer("❌ Заказ отменён ☕", reply_markup=get_menu_keyboard())
+        if is_cafe_open():
+            await message.answer("❌ Заказ отменён ☕", reply_markup=get_menu_keyboard())
+        else:
+            await message.answer(get_closed_message(), reply_markup=get_info_keyboard())
         return
     
     try:
@@ -208,7 +235,10 @@ async def process_confirmation(message: types.Message, state: FSMContext):
         return
     
     await state.finish()
-    await message.answer("🔙 В меню ☕", reply_markup=get_menu_keyboard())
+    if is_cafe_open():
+        await message.answer("🔙 В меню ☕", reply_markup=get_menu_keyboard())
+    else:
+        await message.answer(get_closed_message(), reply_markup=get_info_keyboard())
 
 async def send_order_to_admin(order_data):
     msk_time = get_moscow_time().strftime("%H:%M")
@@ -231,7 +261,7 @@ async def send_order_to_admin(order_data):
 async def call_phone(message: types.Message):
     await message.answer(
         f"📞 <b>Позвонить:</b>\n<code>{CAFE_PHONE}</code>\n\n{get_work_status()}",
-        reply_markup=get_menu_keyboard()
+        reply_markup=get_info_keyboard() if not is_cafe_open() else get_menu_keyboard()
     )
 
 @dp.message_handler(lambda m: m.text == "⏰ Часы работы")
@@ -242,30 +272,35 @@ async def work_hours(message: types.Message):
         f"🕐 Сейчас: {msk_now}\n"
         f"{get_work_status()}\n\n"
         f"📞 <code>{CAFE_PHONE}</code>",
-        reply_markup=get_menu_keyboard()
+        reply_markup=get_info_keyboard() if not is_cafe_open() else get_menu_keyboard()
     )
 
 @dp.message_handler()
 async def echo(message: types.Message, state: FSMContext):
     await state.finish()
     logger.info(f"❓ Неизвестное: {message.text}")
-    await message.answer(
-        f"❓ <b>{CAFE_NAME}</b>\n\n"
-        f"{get_work_status()}\n\n"
-        f"☕ <b>Выберите:</b>",
-        reply_markup=get_menu_keyboard()
-    )
+    
+    if is_cafe_open():
+        await message.answer(
+            f"❓ <b>{CAFE_NAME}</b>\n\n"
+            f"{get_work_status()}\n\n"
+            f"☕ <b>Выберите:</b>",
+            reply_markup=get_menu_keyboard()
+        )
+    else:
+        await message.answer(get_closed_message(), reply_markup=get_info_keyboard())
 
 # ========================================
 async def on_startup(dp):
     """🚀 Старт с московским временем"""
     msk_time = get_moscow_time().strftime("%H:%M")
     await bot.delete_webhook(drop_pending_updates=True)
-    await asyncio.sleep(1)  # ✅ Теперь работает!
+    await asyncio.sleep(1)
     await bot.set_webhook(WEBHOOK_URL)
     info = await bot.get_webhook_info()
     logger.info(f"✅ WEBHOOK: {info.url}")
-    logger.info(f"🚀 v8.19++++ MSK — {CAFE_NAME} | Сейчас MSK: {msk_time}")
+    logger.info(f"🚀 v8.19++++++ MSK — {CAFE_NAME} | Сейчас MSK: {msk_time} | "
+               f"{'🟢 ОТКРЫТО' if is_cafe_open() else '🔴 ЗАКРЫТО'}")
 
 async def on_shutdown(dp):
     await bot.delete_webhook()
@@ -273,11 +308,11 @@ async def on_shutdown(dp):
     logger.info("🛑 STOP")
 
 async def healthcheck(request):
-    return web.Response(text="CafeBotify v8.19++++ LIVE ✅", status=200)
+    return web.Response(text="CafeBotify v8.19++++++ LIVE ✅", status=200)
 
 # ========================================
 if __name__ == '__main__':
-    logger.info(f"🎬 v8.19++++ WEBHOOK — {CAFE_NAME}")
+    logger.info(f"🎬 v8.19++++++ WEBHOOK — {CAFE_NAME}")
     
     app = web.Application()
     app.router.add_get('/', healthcheck)
