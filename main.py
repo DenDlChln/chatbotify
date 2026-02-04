@@ -230,13 +230,34 @@ async def on_shutdown(dp):
     logger.info("🛑 Остановка")
 
 # ========================================
+# ✅ v8.3: Добавляем healthcheck для Render
+from aiohttp import web
+
+async def healthcheck(request):
+    return web.Response(text="OK", status=200)
+
+async def on_startup(dp):
+    logger.info(f"🚀 CAFEBOTIFY v8.3 — {CAFE_NAME}")
+    logger.info(f"☕ Меню: {len(MENU)} позиций")
+    logger.info(f"📞 {CAFE_PHONE}")
+
+async def on_shutdown(dp):
+    logger.info("🛑 Остановка")
+
+# ========================================
 if __name__ == '__main__':
+    # ✅ Создаём AIOHTTP app с healthcheck
+    app = web.Application()
+    app.router.add_get("/", healthcheck)  # ← ЭТА СТРОКА!
+    
     executor.start_webhook(
         dispatcher=dp,
         webhook_path=WEBHOOK_PATH,
-        on_startup=on_startup,     # ✅ АСИНХРОННАЯ!
-        on_shutdown=on_shutdown,   # ✅ АСИНХРОННАЯ!
+        on_startup=on_startup,
+        on_shutdown=on_shutdown,
         skip_updates=True,
         host=HOST,
         port=PORT,
+        app=app  # ← ЭТА СТРОКА!
     )
+
