@@ -2,12 +2,13 @@ import os
 import json
 import logging
 import threading
+import signal
+import sys
 from aiogram import Bot, Dispatcher, types
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiogram.utils import executor
-from datetime import datetime, time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # ========================================
@@ -19,17 +20,11 @@ def load_config():
     try:
         with open('config.json', 'r', encoding='utf-8') as f:
             data = json.load(f)
-            config = data.get('cafe', {})
-            return {
-                'name': config.get('name', 'Кофейня «Уют» ☕'),
-                'phone': config.get('phone', '+7 989 273-67-56'),
-                'admin_chat_id': config.get('admin_chat_id', 1471275603),
-                'menu': config.get('menu', {"☕ Капучино": 250, "🥛 Латте": 270})
-            }
+            return data.get('cafe', {})
     except:
         return {
             "name": "Кофейня «Уют» ☕",
-            "phone": "+7 989 273-67-56",
+            "phone": "+7 989 273-67-56", 
             "admin_chat_id": 1471275603,
             "menu": {
                 "☕ Капучино": 250,
@@ -46,11 +41,15 @@ ADMIN_ID = int(cafe_config["admin_chat_id"])
 MENU = dict(cafe_config["menu"])
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-PORT = int(os.environ.get("PORT", 10007))
+if not BOT_TOKEN:
+    raise ValueError("❌ BOT_TOKEN обязателен!")
 
-# ✅ КАРТИНКИ ДЛЯ ЗАКАЗОВ (Telegram URLs)
-ORDER_PHOTO_CLIENT = "https://i.imgur.com/8zX5z0q.jpg"  # Клиенту
-ORDER_PHOTO_ADMIN = "https://i.imgur.com/Q7jKz8m.jpg"    # Админу
+PORT = int(os.environ.get("PORT", 10000))
+HOST = "0.0.0.0"
+
+# ✅ КАРТИНКИ
+ORDER_PHOTO_CLIENT = "https://i.imgur.com/8zX5z0q.jpg"
+ORDER_PHOTO_ADMIN = "https://i.imgur.com/Q7jKz8m.jpg"
 
 # ========================================
 bot = Bot(token=BOT_TOKEN, parse_mode=types.ParseMode.HTML)
@@ -84,7 +83,11 @@ def get_confirm_keyboard():
 @dp.message_handler(commands=['start'])
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.finish()
-    await message.answer(f"<b>{CAFE_NAME}</b>\n☕ Выберите:", reply_markup=get_menu_keyboard())
+    await message.answer(
+        f"<b>{CAFE_NAME}</b>\n\n"
+        f"☕ <b>Выберите напиток:</b>",
+        reply_markup=get_menu_keyboard()
+    )
     logger.info(f"👤 /start от {message.from_user.id}")
 
 @dp.message_handler(lambda m: m.text in MENU)
@@ -95,12 +98,17 @@ async def drink_selected(message: types.Message, state: FSMContext):
     await state.update_data(drink=drink, price=price)
     await OrderStates.waiting_for_quantity.set()
     await message.answer(
-        f"🥤 <b>{drink}</b>\n💰 <b>{price}₽</b>\n\n📝 Сколько порций?",
+        f"🥤 <b>{drink}</b>\n"
+        f"💰 <b>{price} ₽</b>\n\n"
+        f"📝 <b>Сколько порций?</b>",
         reply_markup=get_quantity_keyboard()
     )
+    logger.info(f"🥤 {drink} от {message.from_user.id}")
 
 @dp.message_handler(state=OrderStates.waiting_for_quantity)
 async def process_quantity(message: types.Message, state: FSMContext):
+    logger.info(f"📊 {message.text} от {message.from_user.id}")
+    
     if message.text == "🔙 Отмена":
         await state.finish()
         await message.answer("❌ Заказ отменён ☕", reply_markup=get_menu_keyboard())
@@ -146,7 +154,8 @@ async def process_confirmation(message: types.Message, state: FSMContext):
         }
         
         # ✅ КАРТИНКА КЛИЕНТУ
-        await message.answer_photo(
+        await bot.send_photo(
+            chat_id=message.from_user.id,
             photo=ORDER_PHOTO_CLIENT,
             caption=f"🎉 <b>ЗАКАЗ #{message.from_user.id} ПРИНЯТ!</b>\n\n"
                    f"🥤 {data['drink']}\n"
@@ -154,7 +163,8 @@ async def process_confirmation(message: types.Message, state: FSMContext):
                    f"💰 <b>{data['total']} ₽</b>\n\n"
                    f"📞 <code>{CAFE_PHONE}</code>\n"
                    f"✅ <i>Готовим! ⏳</i>",
-            reply_markup=get_menu_keyboard()
+            reply_markup=get_menu_keyboard(),
+            parse_mode=types.ParseMode.HTML
         )
         
         # ✅ КАРТИНКА АДМИНУ
@@ -164,24 +174,14 @@ async def process_confirmation(message: types.Message, state: FSMContext):
         logger.info(f"✅ Заказ #{message.from_user.id}")
         return
     
-    elif message.text == "🔙 Меню":
-        await state.finish()
-        await message.answer("🔙 В меню ☕", reply_markup=get_menu_keyboard())
-        return
-    
-    await message.answer(
-        f"<b>📋 {data['drink']} ×{data['quantity']} = {data['total']}₽</b>\n\n"
-        "<b>✅ Подтвердить</b> / <b>🔙 Меню</b>",
-        reply_markup=get_confirm_keyboard()
-    )
+    await state.finish()
+    await message.answer("🔙 В меню ☕", reply_markup=get_menu_keyboard())
 
 async def send_order_to_admin(order_data):
-    """🔔 Отправка заказа АДМИНУ с КАРТИНКОЙ"""
     text = (
         f"🔔 <b>🚨 НОВЫЙ ЗАКАЗ #{order_data['user_id']}</b>\n\n"
         f"👤 <b>{order_data['first_name']}</b>\n"
-        f"🆔 <code>{order_data['user_id']}</code>\n"
-        f"📱 <a href='tg://user?id={order_data['user_id']}'>Написать</a>\n\n"
+        f"🆔 <code>{order_data['user_id']}</code>\n\n"
         f"🥤 <b>{order_data['drink']}</b>\n"
         f"📊 <b>{order_data['quantity']} порций</b>\n"
         f"💰 <b>{order_data['total']} ₽</b>\n\n"
@@ -194,9 +194,9 @@ async def send_order_to_admin(order_data):
             caption=text,
             parse_mode=types.ParseMode.HTML
         )
-        logger.info(f"✅ Заказ #{order_data['user_id']} админу с фото")
+        logger.info(f"✅ Заказ #{order_data['user_id']} админу")
     except Exception as e:
-        logger.error(f"❌ Админ фото: {e}")
+        logger.error(f"❌ Админ: {e}")
 
 @dp.message_handler()
 async def echo(message: types.Message, state: FSMContext):
@@ -204,28 +204,57 @@ async def echo(message: types.Message, state: FSMContext):
     await message.answer(f"{CAFE_NAME}\n☕ Выберите:", reply_markup=get_menu_keyboard())
 
 # ========================================
-# ✅ RENDER Web Service — HTTP сервер
+# ✅ RENDER HTTP SERVER
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.send_header('Content-type', 'text/plain')
         self.end_headers()
-        self.wfile.write(f'v8.16 LIVE - {CAFE_NAME}'.encode())
+        self.wfile.write(f'v8.17 LIVE - {CAFE_NAME}'.encode())
     
     def log_message(self, *args): pass
 
+http_server = None
 def run_http_server():
-    server = HTTPServer(("0.0.0.0", PORT), HealthHandler)
-    logger.info(f"🌐 HTTP сервер на PORT {PORT}")
-    server.serve_forever()
+    global http_server
+    http_server = HTTPServer((HOST, PORT), HealthHandler)
+    logger.info(f"🌐 HTTP сервер на {HOST}:{PORT}")
+    http_server.serve_forever()
+
+# ✅ GRACEFUL SHUTDOWN
+def signal_handler(sig, frame):
+    logger.info("🛑 Получен сигнал остановки...")
+    if http_server:
+        http_server.shutdown()
+    sys.exit(0)
+
+signal.signal(signal.SIGTERM, signal_handler)
+signal.signal(signal.SIGINT, signal_handler)
+
+# ========================================
+async def on_startup(dp):
+    logger.info(f"🚀 v8.17 LIVE — {CAFE_NAME}")
+    logger.info(f"✅ Бот: CafeBotify")
+    logger.info(f"📞 Админ: {ADMIN_ID}")
+    logger.info(f"🌐 PORT: {PORT}")
+
+async def on_shutdown(dp):
+    logger.info("🛑 v8.17 STOP")
+    await dp.storage.close()
+    await dp.storage.wait_closed()
 
 # ========================================
 if __name__ == '__main__':
-    logger.info(f"🚀 v8.16 КАРТИНКИ — {CAFE_NAME}")
+    logger.info(f"🎬 CAFEBOTIFY v8.17 — {CAFE_NAME}")
     
-    # ✅ 1. HTTP для Render
+    # ✅ 1. HTTP сервер (отдельный поток)
     http_thread = threading.Thread(target=run_http_server, daemon=True)
     http_thread.start()
     
-    # ✅ 2. Telegram Bot
-    executor.start_polling(dp, skip_updates=True)
+    # ✅ 2. Telegram Bot (CRITICAL: skip_updates=True!)
+    executor.start_polling(
+        dp, 
+        skip_updates=True,  # ← ПРОТИВ 409 CONFLICT!
+        on_startup=on_startup,
+        on_shutdown=on_shutdown
+    )
