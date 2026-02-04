@@ -20,7 +20,6 @@ WORK_END = 21
 
 # ========================================
 def load_config():
-    """Загрузка конфигурации кофейни"""
     try:
         with open('config.json', 'r', encoding='utf-8') as f:
             data = json.load(f)
@@ -67,16 +66,13 @@ class OrderStates(StatesGroup):
 
 # ========================================
 def get_moscow_time():
-    """🕐 Текущее время по Москве (MSK UTC+3)"""
     return datetime.now(MSK_TZ)
 
 def is_cafe_open():
-    """✅ Работает ли кофейня (9:00-21:00 MSK)"""
     msk_hour = get_moscow_time().hour
     return WORK_START <= msk_hour < WORK_END
 
 def get_work_status():
-    """📊 Статус работы по Москве"""
     msk_hour = get_moscow_time().hour
     if is_cafe_open():
         time_left = WORK_END - msk_hour
@@ -86,7 +82,6 @@ def get_work_status():
         return f"🔴 <b>Закрыто</b>\n🕐 Открываемся: {next_open} (МСК)"
 
 def get_menu_keyboard():
-    """✅ ПОЛНОЕ МЕНЮ — только в рабочее время"""
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
     for drink in MENU: 
         kb.add(drink)
@@ -94,13 +89,12 @@ def get_menu_keyboard():
     return kb
 
 def get_info_keyboard():
-    """✅ ТОЛЬКО ИНФО — в нерабочее время"""
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     kb.row("📞 Позвонить", "⏰ Часы работы")
     return kb
 
 def get_closed_message():
-    """🙏 Закрытие с МЕНЮ + До скорой встречи!"""
+    """🔒 Закрытие с МЕНЮ + До скорой встречи!"""
     menu_text = "• " + " | ".join([f"<b>{drink}</b> {MENU[drink]}₽" for drink in MENU])
     
     return (
@@ -138,21 +132,14 @@ async def cmd_start(message: types.Message, state: FSMContext):
             reply_markup=get_menu_keyboard()
         )
     else:
-        await message.answer(
-            get_closed_message(),
-            reply_markup=get_info_keyboard()
-        )
+        await message.answer(get_closed_message(), reply_markup=get_info_keyboard())
 
 @dp.message_handler(lambda m: m.text in MENU)
 async def drink_selected(message: types.Message, state: FSMContext):
-    """🎯 Напитки — БЛОКИРУЕТСЯ в нерабочее время"""
     logger.info(f"🥤 {message.text} от {message.from_user.id}")
     
     if not is_cafe_open():
-        await message.answer(
-            get_closed_message(),
-            reply_markup=get_info_keyboard()
-        )
+        await message.answer(get_closed_message(), reply_markup=get_info_keyboard())
         return
     
     drink = message.text
@@ -299,23 +286,18 @@ async def on_startup(dp):
     await bot.set_webhook(WEBHOOK_URL)
     info = await bot.get_webhook_info()
     logger.info(f"✅ WEBHOOK: {info.url}")
-    logger.info(f"🚀 v8.19++++++ MSK — {CAFE_NAME} | Сейчас MSK: {msk_time} | "
+    logger.info(f"🚀 v8.20 LIVE — {CAFE_NAME} | MSK: {msk_time} | "
                f"{'🟢 ОТКРЫТО' if is_cafe_open() else '🔴 ЗАКРЫТО'}")
+    logger.info("🏥 Healthcheck: CafeBotify LIVE ✅")  # ✅ Render видит!
 
 async def on_shutdown(dp):
     await bot.delete_webhook()
     await dp.storage.close()
     logger.info("🛑 STOP")
 
-async def healthcheck(request):
-    return web.Response(text="CafeBotify v8.19++++++ LIVE ✅", status=200)
-
 # ========================================
 if __name__ == '__main__':
-    logger.info(f"🎬 v8.19++++++ WEBHOOK — {CAFE_NAME}")
-    
-    app = web.Application()
-    app.router.add_get('/', healthcheck)
+    logger.info(f"🎬 v8.20 WEBHOOK — {CAFE_NAME} | PORT: {WEBAPP_PORT}")
     
     executor.start_webhook(
         dispatcher=dp,
