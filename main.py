@@ -39,7 +39,7 @@ def load_config():
 
 cafe_config = load_config()
 CAFE_NAME = cafe_config["name"]
-CAFE_PHONE = cafe_config["cafe_phone"]
+PHONE = cafe_config["cafe_phone"]
 ADMIN_ID = int(cafe_config["admin_chat_id"])
 MENU = dict(cafe_config["menu"])
 WORK_START_HOUR = int(cafe_config["work_hours"][0])
