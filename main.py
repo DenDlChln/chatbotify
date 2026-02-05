@@ -141,6 +141,12 @@ def get_closed_message() -> str:
     )
 
 
+def get_user_name(message: Message) -> str:
+    if message.from_user is None:
+        return "друг"
+    return message.from_user.first_name or "друг"
+
+
 async def get_redis_client():
     client = redis.from_url(REDIS_URL)
     try:
@@ -290,14 +296,52 @@ async def process_confirmation(message: Message, state: FSMContext):
     await message.answer("❌ Нажмите кнопку", reply_markup=create_confirm_keyboard())
 
 
+# ====== ТЁПЛЫЕ СООБЩЕНИЯ (ИЗМЕНЕНО ТУТ) ======
+
 @router.message(F.text == "📞 Позвонить")
 async def call_phone(message: Message):
-    await message.answer(f"📞 Звоните: <code>{CAFE_PHONE}</code>")
+    name = get_user_name(message)
+    if is_cafe_open():
+        text = (
+            f"{name}, буду рад помочь!\n\n"
+            f"📞 <b>Телефон {CAFE_NAME}:</b>\n<code>{CAFE_PHONE}</code>\n\n"
+            f"Если удобнее — можешь просто выбрать напиток в меню, я всё оформлю здесь."
+        )
+        await message.answer(text, reply_markup=create_menu_keyboard())
+    else:
+        text = (
+            f"{name}, сейчас мы закрыты, но я всё равно подскажу.\n\n"
+            f"📞 <b>Телефон {CAFE_NAME}:</b>\n<code>{CAFE_PHONE}</code>\n\n"
+            f"⏰ {get_work_status()}\n\n"
+            f"Хочешь — посмотри меню, а заказ оформим, как только откроемся."
+        )
+        await message.answer(text, reply_markup=create_info_keyboard())
 
 
 @router.message(F.text == "⏰ Часы работы")
 async def show_hours(message: Message):
-    await message.answer(f"🏪 {get_work_status()}\n📞 {CAFE_PHONE}")
+    name = get_user_name(message)
+    msk_time = get_moscow_time().strftime("%H:%M")
+    if is_cafe_open():
+        text = (
+            f"{name}, мы сейчас на месте и готовим вкусное.\n\n"
+            f"🕐 <b>Сейчас:</b> {msk_time} (МСК)\n"
+            f"🏪 {get_work_status()}\n\n"
+            f"📞 Если нужно уточнить детали: <code>{CAFE_PHONE}</code>\n"
+            f"Выбирай напиток в меню — оформлю заказ за минуту."
+        )
+        await message.answer(text, reply_markup=create_menu_keyboard())
+    else:
+        text = (
+            f"{name}, спасибо что заглянул!\n\n"
+            f"🕐 <b>Сейчас:</b> {msk_time} (МСК)\n"
+            f"🏪 {get_work_status()}\n\n"
+            f"📞 Телефон: <code>{CAFE_PHONE}</code>\n"
+            f"Пока можем показать меню — напиши /start."
+        )
+        await message.answer(text, reply_markup=create_info_keyboard())
+
+# ====== / ТЁПЛЫЕ СООБЩЕНИЯ ======
 
 
 @router.message(Command("stats"))
@@ -331,8 +375,6 @@ async def on_startup(bot: Bot) -> None:
     except Exception as e:
         logger.error(f"❌ Redis: {e}")
 
-    # КЛЮЧЕВОЙ ФИКС: всегда переустанавливаем webhook с secret_token,
-    # иначе Telegram может слать без заголовка и ты снова получишь 401.
     try:
         current_webhook = await bot.get_webhook_info()
         logger.info(f"Текущий webhook: {current_webhook.url}")
