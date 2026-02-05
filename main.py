@@ -7,17 +7,17 @@ from datetime import datetime, timezone, timedelta
 from typing import Dict, Any
 
 import redis.asyncio as redis
-import aiohttp
 from aiohttp import web
+
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.fsm.storage.redis import RedisStorage
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
-from aiogram.types import (
-    Message, ReplyKeyboardMarkup, KeyboardButton
-)
+from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.filters import CommandStart, Command, StateFilter
 from aiogram.client.default import DefaultBotProperties
+
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application  # FIX [page:1]
 
 logging.basicConfig(
     level=logging.INFO,
@@ -29,10 +29,11 @@ MSK_TZ = timezone(timedelta(hours=3))
 WORK_START = 9
 WORK_END = 21
 
+
 def load_config() -> Dict[str, Any]:
     default_config = {
         "name": "Кофейня «Уют» ☕",
-        "phone": "+7 989 273-67-56", 
+        "phone": "+7 989 273-67-56",
         "admin_chat_id": 1471275603,
         "menu": {
             "☕ Капучино": 250,
@@ -55,6 +56,7 @@ def load_config() -> Dict[str, Any]:
         pass
     return default_config
 
+
 cafe_config = load_config()
 CAFE_NAME = cafe_config["name"]
 CAFE_PHONE = cafe_config["phone"]
@@ -64,44 +66,51 @@ MENU = dict(cafe_config["menu"])
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 REDIS_URL = os.getenv("REDIS_URL")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "cafebot123")
-HOSTNAME = os.getenv('RENDER_EXTERNAL_HOSTNAME', 'chatbotify-2tjd.onrender.com')
-PORT = int(os.getenv('PORT', 10000))
+HOSTNAME = os.getenv("RENDER_EXTERNAL_HOSTNAME", "chatbotify-2tjd.onrender.com")
+PORT = int(os.getenv("PORT", 10000))
 
-WEBHOOK_PATH = f'/{WEBHOOK_SECRET}/webhook'
+WEBHOOK_PATH = f"/{WEBHOOK_SECRET}/webhook"
 WEBHOOK_URL = f"https://{HOSTNAME}{WEBHOOK_PATH}"
 
-bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode='HTML'))
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 storage = RedisStorage.from_url(REDIS_URL)
 dp = Dispatcher(storage=storage)
 router = Router()
 dp.include_router(router)
 
+
 class OrderStates(StatesGroup):
     waiting_for_quantity = State()
     waiting_for_confirmation = State()
 
+
 def get_moscow_time() -> datetime:
     return datetime.now(MSK_TZ)
+
 
 def is_cafe_open() -> bool:
     return WORK_START <= get_moscow_time().hour < WORK_END
 
+
 def get_work_status() -> str:
     msk_hour = get_moscow_time().hour
     if is_cafe_open():
-        return f"🟢 <b>Открыто</b> (ещё {WORK_END-msk_hour} ч.)"
+        return f"🟢 <b>Открыто</b> (ещё {WORK_END - msk_hour} ч.)"
     return f"🔴 <b>Закрыто</b>\n🕐 Открываемся: {WORK_START}:00 (МСК)"
+
 
 def create_menu_keyboard() -> ReplyKeyboardMarkup:
     keyboard = [[KeyboardButton(text=drink)] for drink in MENU.keys()]
     keyboard.append([KeyboardButton(text="📞 Позвонить"), KeyboardButton(text="⏰ Часы работы")])
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
+
 def create_info_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="📞 Позвонить"), KeyboardButton(text="⏰ Часы работы")]],
         resize_keyboard=True
     )
+
 
 def create_quantity_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
@@ -113,6 +122,7 @@ def create_quantity_keyboard() -> ReplyKeyboardMarkup:
         one_time_keyboard=True
     )
 
+
 def create_confirm_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="Подтвердить"), KeyboardButton(text="Меню")]],
@@ -120,18 +130,27 @@ def create_confirm_keyboard() -> ReplyKeyboardMarkup:
         one_time_keyboard=True
     )
 
+
 def get_closed_message() -> str:
     menu_text = " • ".join([f"<b>{drink}</b> {price}₽" for drink, price in MENU.items()])
-    return f"🔒 <b>{CAFE_NAME} сейчас закрыто!</b>\n\n⏰ {get_work_status()}\n\n☕ <b>Наше меню:</b>\n{menu_text}\n\n📞 <b>Связаться:</b>\n<code>{CAFE_PHONE}</code>\n\n✨ <i>До скорой встречи!</i>"
+    return (
+        f"🔒 <b>{CAFE_NAME} сейчас закрыто!</b>\n\n"
+        f"⏰ {get_work_status()}\n\n"
+        f"☕ <b>Наше меню:</b>\n{menu_text}\n\n"
+        f"📞 <b>Связаться:</b>\n<code>{CAFE_PHONE}</code>\n\n"
+        f"✨ <i>До скорой встречи!</i>"
+    )
+
 
 async def get_redis_client():
     client = redis.from_url(REDIS_URL)
     try:
         await client.ping()
         return client
-    except:
+    except Exception:
         await client.aclose()
         raise
+
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
@@ -139,24 +158,26 @@ async def cmd_start(message: Message, state: FSMContext):
     user_id = message.from_user.id
     msk_time = get_moscow_time().strftime("%H:%M")
     logger.info(f"👤 /start от {user_id} | MSK: {msk_time}")
-    
+
     if is_cafe_open():
         await message.answer(
-            f"<b>{CAFE_NAME}</b>\n\n🕐 <i>Московское время: {msk_time}</i>\n🏪 {get_work_status()}\n\n☕ <b>Выберите напиток:</b>",
+            f"<b>{CAFE_NAME}</b>\n\n🕐 <i>Московское время: {msk_time}</i>\n🏪 {get_work_status()}\n\n"
+            f"☕ <b>Выберите напиток:</b>",
             reply_markup=create_menu_keyboard()
         )
     else:
         await message.answer(get_closed_message(), reply_markup=create_info_keyboard())
 
+
 @router.message(F.text.in_(set(MENU.keys())))
 async def drink_selected(message: Message, state: FSMContext):
     user_id = message.from_user.id
     logger.info(f"🥤 {message.text} от {user_id}")
-    
+
     if not is_cafe_open():
         await message.answer(get_closed_message(), reply_markup=create_info_keyboard())
         return
-    
+
     try:
         r_client = await get_redis_client()
         last_order = await r_client.get(f"rate_limit:{user_id}")
@@ -166,37 +187,41 @@ async def drink_selected(message: Message, state: FSMContext):
             return
         await r_client.setex(f"rate_limit:{user_id}", 300, time.time())
         await r_client.aclose()
-    except:
+    except Exception:
         pass
-    
+
     drink = message.text
     price = MENU[drink]
-    
+
     await state.set_state(OrderStates.waiting_for_quantity)
     await state.set_data({"drink": drink, "price": price})
-    
+
     await message.answer(
         f"🥤 <b>{drink}</b>\n💰 <b>{price} ₽</b>\n\n📝 <b>Сколько порций?</b>",
         reply_markup=create_quantity_keyboard()
     )
 
+
 @router.message(StateFilter(OrderStates.waiting_for_quantity))
 async def process_quantity(message: Message, state: FSMContext):
     if message.text == "🔙 Отмена":
         await state.clear()
-        await message.answer("❌ Заказ отменён", reply_markup=create_menu_keyboard() if is_cafe_open() else create_info_keyboard())
+        await message.answer(
+            "❌ Заказ отменён",
+            reply_markup=create_menu_keyboard() if is_cafe_open() else create_info_keyboard()
+        )
         return
-    
+
     try:
         quantity = int(message.text[0])
         if 1 <= quantity <= 5:
             data = await state.get_data()
             drink, price = data["drink"], data["price"]
             total = price * quantity
-            
+
             await state.set_state(OrderStates.waiting_for_confirmation)
             await state.update_data(quantity=quantity, total=total)
-            
+
             await message.answer(
                 f"🥤 <b>{drink}</b> × {quantity}\n💰 Итого: <b>{total} ₽</b>\n\n✅ Правильно?",
                 reply_markup=create_confirm_keyboard()
@@ -206,14 +231,15 @@ async def process_quantity(message: Message, state: FSMContext):
     except ValueError:
         await message.answer("❌ Нажмите на кнопку", reply_markup=create_quantity_keyboard())
 
+
 @router.message(StateFilter(OrderStates.waiting_for_confirmation))
 async def process_confirmation(message: Message, state: FSMContext):
     if message.text == "Подтвердить":
         data = await state.get_data()
         drink, quantity, total = data["drink"], data["quantity"], data["total"]
         order_id = f"order:{int(time.time())}:{message.from_user.id}"
-        order_num = order_id.split(':')[-1]
-        
+        order_num = order_id.split(":")[-1]
+
         try:
             r_client = await get_redis_client()
             await r_client.hset(order_id, mapping={
@@ -228,9 +254,9 @@ async def process_confirmation(message: Message, state: FSMContext):
             await r_client.incr("stats:total_orders")
             await r_client.incr(f"stats:drink:{drink}")
             await r_client.aclose()
-        except:
+        except Exception:
             pass
-        
+
         user_name = message.from_user.username or message.from_user.first_name or "Клиент"
         admin_message = (
             f"🔔 <b>НОВЫЙ ЗАКАЗ #{order_num}</b> | {CAFE_NAME}\n\n"
@@ -241,9 +267,8 @@ async def process_confirmation(message: Message, state: FSMContext):
             f"<b>{total} ₽</b>\n\n"
             f"<code>{CAFE_PHONE}</code>"
         )
-        
         await bot.send_message(ADMIN_ID, admin_message, disable_web_page_preview=True)
-        
+
         await message.answer(
             f"🎉 <b>Заказ #{order_num} принят!</b>\n\n"
             f"🥤 {drink} × {quantity}\n"
@@ -252,19 +277,25 @@ async def process_confirmation(message: Message, state: FSMContext):
             reply_markup=create_menu_keyboard()
         )
         await state.clear()
-    elif message.text == "Меню":
+        return
+
+    if message.text == "Меню":
         await state.clear()
         await message.answer("☕ Меню:", reply_markup=create_menu_keyboard())
-    else:
-        await message.answer("❌ Нажмите кнопку", reply_markup=create_confirm_keyboard())
+        return
+
+    await message.answer("❌ Нажмите кнопку", reply_markup=create_confirm_keyboard())
+
 
 @router.message(F.text == "📞 Позвонить")
 async def call_phone(message: Message):
     await message.answer(f"📞 Звоните: <code>{CAFE_PHONE}</code>")
 
+
 @router.message(F.text == "⏰ Часы работы")
 async def show_hours(message: Message):
     await message.answer(f"🏪 {get_work_status()}\n📞 {CAFE_PHONE}")
+
 
 @router.message(Command("stats"))
 async def stats_command(message: Message):
@@ -280,14 +311,15 @@ async def stats_command(message: Message):
                 stats_text += f"{drink}: {count}\n"
         await r_client.aclose()
         await message.answer(stats_text)
-    except:
+    except Exception:
         await message.answer("❌ Ошибка статистики")
 
-async def on_startup(app: web.Application):
+
+async def on_startup(bot_obj: Bot):
     logger.info("🚀 Запуск бота...")
     logger.info(f"☕ Кафе: {CAFE_NAME}")
     logger.info(f"🔗 Webhook: {WEBHOOK_URL}")
-    
+
     try:
         r_test = redis.from_url(REDIS_URL)
         await r_test.ping()
@@ -295,31 +327,29 @@ async def on_startup(app: web.Application):
         logger.info("✅ Redis подключён")
     except Exception as e:
         logger.error(f"❌ Redis: {e}")
-    
+
     try:
-        current_webhook = await bot.get_webhook_info()
+        current_webhook = await bot_obj.get_webhook_info()
         logger.info(f"Текущий webhook: {current_webhook.url}")
         if current_webhook.url != WEBHOOK_URL:
-            await bot.set_webhook(WEBHOOK_URL)
+            # Можно также передать secret_token=WEBHOOK_SECRET (для проверки запросов),
+            # но у тебя секрет уже в PATH, это ок для MVP.
+            await bot_obj.set_webhook(WEBHOOK_URL)
             logger.info(f"✅ Webhook установлен: {WEBHOOK_URL}")
         else:
             logger.info("ℹ️ Webhook уже установлен")
     except Exception as e:
         logger.error(f"❌ Webhook ошибка: {e}")
 
+
 async def on_shutdown(app: web.Application):
-    await bot.delete_webhook()
+    try:
+        await bot.delete_webhook()
+    except Exception:
+        pass
     await storage.close()
     logger.info("🛑 Бот остановлен")
 
-async def webhook_handler(request: web.Request):
-    try:
-        update = await request.json()
-        await dp.feed_update(bot, update)
-        return web.json_response({"status": "ok"}, status=200)
-    except Exception as e:
-        logger.error(f"Webhook ошибка: {e}")
-        return web.json_response({"error": "internal error"}, status=500)
 
 async def main():
     if not BOT_TOKEN:
@@ -328,29 +358,35 @@ async def main():
     if not REDIS_URL:
         logger.error("❌ REDIS_URL не найден!")
         return
-    
+
+    # startup hook в стиле aiogram 3 (рекомендовано) [page:0][page:1]
+    dp.startup.register(on_startup)
+
     app = web.Application()
-    
-    async def healthcheck(request):
+
+    async def healthcheck(request: web.Request):
         return web.json_response({"status": "healthy", "bot": "ready"})
-    
-    app.router.add_get('/', healthcheck)
-    app.router.add_post(WEBHOOK_PATH, webhook_handler)
-    
-    app.on_startup.append(on_startup)
+
+    app.router.add_get("/", healthcheck)
+
+    # FIX: вместо ручного webhook_handler используем SimpleRequestHandler [page:0][page:1]
+    SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path=WEBHOOK_PATH)
+    setup_application(app, dp, bot=bot)
+
     app.on_shutdown.append(on_shutdown)
-    
+
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', PORT)
-    
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+
     logger.info(f"🌐 Сервер запущен на 0.0.0.0:{PORT}")
     await site.start()
-    
+
     try:
         await asyncio.Event().wait()
     finally:
         await runner.cleanup()
+
 
 if __name__ == "__main__":
     asyncio.run(main())
