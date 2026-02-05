@@ -4,7 +4,6 @@ import logging
 import asyncio
 import time
 from datetime import datetime, timezone, timedelta
-from collections import defaultdict
 from typing import Dict, Any
 
 import redis.asyncio as redis
@@ -13,8 +12,7 @@ from aiogram.fsm.storage.redis import RedisStorage
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from aiogram.types import (
-    Message, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton, 
-    InlineKeyboardMarkup, InlineKeyboardButton
+    Message, ReplyKeyboardMarkup, KeyboardButton
 )
 from aiogram.filters import CommandStart, Command, StateFilter
 from aiogram.client.default import DefaultBotProperties
@@ -26,13 +24,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Конфигурация
 MSK_TZ = timezone(timedelta(hours=3))
 WORK_START = 9
 WORK_END = 21
 
 def load_config() -> Dict[str, Any]:
-    """Загрузка конфигурации из config.json"""
     default_config = {
         "name": "Кофейня «Уют» ☕",
         "phone": "+7 989 273-67-56", 
@@ -41,8 +37,7 @@ def load_config() -> Dict[str, Any]:
             "☕ Капучино": 250,
             "🥛 Латте": 270,
             "🍵 Чай": 180,
-            "⚡ Эспрессо": 200,
-            "🧋 Bubble Tea": 320
+            "⚡ Эспрессо": 200
         }
     }
     
@@ -56,26 +51,24 @@ def load_config() -> Dict[str, Any]:
                 'admin_chat_id': config.get('admin_chat_id', default_config['admin_chat_id']),
                 'menu': config.get('menu', default_config['menu'])
             })
-    except Exception as e:
-        logger.warning(f"Ошибка загрузки config.json: {e}")
+    except Exception:
+        pass
     
     return default_config
 
-# Глобальная конфигурация
 cafe_config = load_config()
 CAFE_NAME = cafe_config["name"]
 CAFE_PHONE = cafe_config["phone"]
 ADMIN_ID = int(cafe_config["admin_chat_id"])
 MENU = dict(cafe_config["menu"])
 
-# ТВОИ Environment Variables из Render
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-REDIS_URL = os.getenv("REDIS_URL")  # ← Уже добавлено в Render!
+REDIS_URL = os.getenv("REDIS_URL")
 WEBAPP_PORT = int(os.getenv('PORT', 10000))
 
 # ========================================
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode='HTML'))
-storage = RedisStorage.from_url(REDIS_URL)  # ← Работает с твоим REDIS_URL!
+storage = RedisStorage.from_url(REDIS_URL)
 dp = Dispatcher(storage=storage)
 router = Router()
 dp.include_router(router)
@@ -98,45 +91,62 @@ def get_work_status() -> str:
     return f"🔴 <b>Закрыто</b>\n🕐 Открываемся: {WORK_START}:00 (МСК)"
 
 def create_menu_keyboard() -> ReplyKeyboardMarkup:
-    buttons = [[KeyboardButton(text=drink)] for drink in MENU.keys()]
-    buttons.append([
+    keyboard = [
+        [KeyboardButton(text=drink)] for drink in MENU.keys()
+    ]
+    keyboard.append([
         KeyboardButton(text="📞 Позвонить"), 
         KeyboardButton(text="⏰ Часы работы")
     ])
     return ReplyKeyboardMarkup(
-        keyboard=buttons, 
-        resize_keyboard=True
+        keyboard=keyboard,
+        resize_keyboard=True,
+        one_time_keyboard=False
     )
 
 def create_info_keyboard() -> ReplyKeyboardMarkup:
+    keyboard = [
+        [KeyboardButton(text="📞 Позвонить"), KeyboardButton(text="⏰ Часы работы")]
+    ]
     return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="📞 Позвонить"), KeyboardButton(text="⏰ Часы работы")]
-        ],
+        keyboard=keyboard,
         resize_keyboard=True
     )
 
 def create_quantity_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            ["1️⃣", "2️⃣", "3️⃣"],
-            ["4️⃣", "5️⃣", "🔙 Отмена"]
+    keyboard = [
+        [
+            KeyboardButton(text="1️⃣"),
+            KeyboardButton(text="2️⃣"), 
+            KeyboardButton(text="3️⃣")
         ],
+        [
+            KeyboardButton(text="4️⃣"),
+            KeyboardButton(text="5️⃣"),
+            KeyboardButton(text="🔙 Отмена")
+        ]
+    ]
+    return ReplyKeyboardMarkup(
+        keyboard=keyboard,
         resize_keyboard=True,
         one_time_keyboard=True
     )
 
 def create_confirm_keyboard() -> ReplyKeyboardMarkup:
+    keyboard = [
+        [
+            KeyboardButton(text="✅ Подтвердить"),
+            KeyboardButton(text="📝 Меню")
+        ]
+    ]
     return ReplyKeyboardMarkup(
-        keyboard=[
-            ["✅ Подтвердить", "📝 Меню"]
-        ],
+        keyboard=keyboard,
         resize_keyboard=True,
         one_time_keyboard=True
     )
 
 def get_closed_message() -> str:
-    menu_text = "• " + " | ".join([f"<b>{drink}</b> {price}₽" for drink, price in MENU.items()])
+    menu_text = " • ".join([f"<b>{drink}</b> {price}₽" for drink, price in MENU.items()])
     return (
         f"🔒 <b>{CAFE_NAME} сейчас закрыто!</b>\n\n"
         f"⏰ {get_work_status()}\n\n"
@@ -146,8 +156,7 @@ def get_closed_message() -> str:
         f"✨ <i>До скорой встречи!</i>"
     )
 
-async def get_redis_client() -> redis.Redis:
-    """Глобальный Redis клиент"""
+async def get_redis_client():
     return redis.from_url(REDIS_URL)
 
 # ========================================
@@ -178,19 +187,21 @@ async def drink_selected(message: Message, state: FSMContext):
         await message.answer(get_closed_message(), reply_markup=create_info_keyboard())
         return
     
-    # Rate limiting через Redis
-    r_client = await get_redis_client()
-    last_order = await r_client.get(f"rate_limit:{user_id}")
-    if last_order and time.time() - float(last_order) < 300:
-        await message.answer(
-            "⏳ Подождите 5 минут перед новым заказом", 
-            reply_markup=create_menu_keyboard()
-        )
+    # Rate limiting
+    try:
+        r_client = await get_redis_client()
+        last_order = await r_client.get(f"rate_limit:{user_id}")
+        if last_order and time.time() - float(last_order) < 300:
+            await message.answer(
+                "⏳ Подождите 5 минут перед новым заказом", 
+                reply_markup=create_menu_keyboard()
+            )
+            await r_client.close()
+            return
+        await r_client.setex(f"rate_limit:{user_id}", 300, time.time())
         await r_client.close()
-        return
-    
-    await r_client.setex(f"rate_limit:{user_id}", 300, time.time())
-    await r_client.close()
+    except:
+        pass  # Игнорируем Redis ошибки для надёжности
     
     drink = message.text
     price = MENU[drink]
@@ -219,7 +230,8 @@ async def process_quantity(message: Message, state: FSMContext):
         quantity = int(message.text[0])  # 1️⃣ → 1
         if 1 <= quantity <= 5:
             data = await state.get_data()
-            drink, price = data["drink"], data["price"]
+            drink = data["drink"]
+            price = data["price"]
             total = price * quantity
             
             await state.set_state(OrderStates.waiting_for_confirmation)
@@ -244,37 +256,36 @@ async def process_confirmation(message: Message, state: FSMContext):
         quantity = data["quantity"]
         total = data["total"]
         
-        # Сохраняем заказ в Redis
-        r_client = await get_redis_client()
-        order_id = f"order:{int(time.time())}:{message.from_user.id}"
-        order_data = {
-            "user_id": message.from_user.id,
-            "username": message.from_user.username or "N/A",
-            "drink": drink,
-            "quantity": quantity,
-            "total": total,
-            "timestamp": datetime.now().isoformat()
-        }
-        await r_client.hset(order_id, mapping=order_data)
-        await r_client.expire(order_id, 86400)  # 24 часа
-        
-        # Статистика заказов
-        await r_client.incr("stats:total_orders")
-        await r_client.incr(f"stats:drink:{drink}")
-        await r_client.close()
-        
-        # Уведомление админу
-        await bot.send_message(
-            ADMIN_ID,
-            f"🔔 <b>Новый заказ #{order_id.split(':')[-1]}</b>\n\n"
-            f"👤 <code>{message.from_user.id}</code>\n"
-            f"🥤 {drink} × {quantity}\n"
-            f"💰 {total}₽\n"
-            f"📅 {get_moscow_time().strftime('%H:%M')}"
-        )
+        # Сохранение заказа
+        try:
+            r_client = await get_redis_client()
+            order_id = f"order:{int(time.time())}:{message.from_user.id}"
+            await r_client.hset(order_id, mapping={
+                "user_id": message.from_user.id,
+                "drink": drink,
+                "quantity": quantity,
+                "total": total,
+                "timestamp": datetime.now().isoformat()
+            })
+            await r_client.expire(order_id, 86400)
+            await r_client.incr("stats:total_orders")
+            await r_client.incr(f"stats:drink:{drink}")
+            await r_client.close()
+            
+            order_num = order_id.split(':')[-1]
+            await bot.send_message(
+                ADMIN_ID,
+                f"🔔 <b>Новый заказ #{order_num}</b>\n\n"
+                f"👤 <code>{message.from_user.id}</code>\n"
+                f"🥤 {drink} × {quantity}\n"
+                f"💰 {total}₽\n"
+                f"📅 {get_moscow_time().strftime('%H:%M')}"
+            )
+        except:
+            pass
         
         await message.answer(
-            f"🎉 <b>Заказ #{order_id.split(':')[-1]} принят!</b>\n\n"
+            f"🎉 <b>Заказ #{order_id.split(':')[-1] if 'order_id' in locals() else '000'} принят!</b>\n\n"
             f"🥤 {drink} × {quantity}\n"
             f"💰 {total}₽\n\n"
             f"📞 {CAFE_PHONE}\n⏳ Готовим!",
@@ -285,7 +296,6 @@ async def process_confirmation(message: Message, state: FSMContext):
     elif message.text == "📝 Меню":
         await state.clear()
         await message.answer("☕ Меню:", reply_markup=create_menu_keyboard())
-    
     else:
         await message.answer("❌ Нажмите кнопку", reply_markup=create_confirm_keyboard())
 
@@ -302,58 +312,46 @@ async def stats_command(message: Message):
     if message.from_user.id != ADMIN_ID:
         return
     
-    r_client = await get_redis_client()
-    total_orders = await r_client.get("stats:total_orders") or 0
-    drink_stats = {}
-    
-    for drink in MENU.keys():
-        count = await r_client.get(f"stats:drink:{drink}")
-        drink_stats[drink] = int(count) if count else 0
-    
-    await r_client.close()
-    
-    stats_text = f"📊 <b>Статистика заказов</b>\n\n"
-    stats_text += f"Всего заказов: <b>{total_orders}</b>\n\n"
-    for drink, count in sorted(drink_stats.items(), key=lambda x: x[1], reverse=True):
-        stats_text += f"{drink}: {count}\n"
-    
-    await message.answer(stats_text)
+    try:
+        r_client = await get_redis_client()
+        total_orders = int(await r_client.get("stats:total_orders") or 0)
+        
+        stats_text = f"📊 <b>Статистика заказов</b>\n\nВсего заказов: <b>{total_orders}</b>\n\n"
+        for drink in MENU.keys():
+            count = int(await r_client.get(f"stats:drink:{drink}") or 0)
+            if count > 0:
+                stats_text += f"{drink}: {count}\n"
+        await r_client.close()
+        
+        await message.answer(stats_text)
+    except:
+        await message.answer("❌ Ошибка статистики")
 
 # ========================================
-async def main() -> None:
-    """Основная функция запуска"""
+async def main():
     if not BOT_TOKEN:
-        logger.error("❌ BOT_TOKEN не найден в Environment Variables!")
+        logger.error("❌ BOT_TOKEN не найден!")
         return
     if not REDIS_URL:
-        logger.error("❌ REDIS_URL не найден в Environment Variables!")
+        logger.error("❌ REDIS_URL не найден!")
         return
         
     logger.info("🚀 Запуск бота...")
     logger.info(f"☕ Кафе: {CAFE_NAME}")
-    logger.info(f"⏰ Рабочие часы: {WORK_START}:00-{WORK_END}:00 MSK")
-    logger.info(f"📡 Redis: {REDIS_URL[:30]}...")
     
-    # Тест Redis подключения
     try:
         r_test = await get_redis_client()
         await r_test.ping()
         await r_test.close()
-        logger.info("✅ Redis подключён!")
+        logger.info("✅ Redis OK")
     except Exception as e:
-        logger.error(f"❌ Redis ошибка: {e}")
-        return
+        logger.error(f"❌ Redis: {e}")
     
     try:
         async with bot:
             await dp.start_polling(bot)
-    except KeyboardInterrupt:
-        logger.info("🛑 Получен сигнал остановки")
-    except Exception as e:
-        logger.error(f"❌ Критическая ошибка: {e}")
     finally:
         await storage.close()
-        logger.info("🛑 Бот остановлен")
 
 if __name__ == "__main__":
     asyncio.run(main())
