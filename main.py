@@ -222,6 +222,7 @@ async def process_confirmation(message: Message, state: FSMContext):
         order_id = f"order:{int(time.time())}:{message.from_user.id}"
         order_num = order_id.split(':')[-1]
         
+        # Сохранение заказа в Redis
         try:
             r_client = await get_redis_client()
             await r_client.hset(order_id, mapping={
@@ -239,10 +240,36 @@ async def process_confirmation(message: Message, state: FSMContext):
         except:
             pass
         
-        await bot.send_message(
-            ADMIN_ID,
-            f"🔔 <b>Новый заказ #{order_num}</b>\n\n👤 <code>{message.from_user.id}</code>\n🥤 {drink} × {quantity}\n💰 {total}₽\n📅 {get_moscow_time().strftime('%H:%M')}"
+        # ✅ КРАСИВОЕ УВЕДОМЛЕНИЕ АДМИНУ (как на скриншоте)
+        user_name = message.from_user.username or message.from_user.first_name or "Клиент"
+        admin_message = (
+            f"🔔 <b>НОВЫЙ ЗАКАЗ #{order_num}</b> | {CAFE_NAME}\n\n"
+            f"<b>{user_name}</b>\n"
+            f"<code>{message.from_user.id}</code>\n\n"
+            f"{drink}\n"
+            f"{quantity} порций\n"
+            f"<b>{total} ₽</b>\n\n"
+            f"<code>{CAFE_PHONE}</code>"
         )
+        
+        await bot.send_message(ADMIN_ID, admin_message, disable_web_page_preview=True)
+        
+        # Подтверждение клиенту
+        await message.answer(
+            f"🎉 <b>Заказ #{order_num} принят!</b>\n\n"
+            f"🥤 {drink} × {quantity}\n"
+            f"💰 {total}₽\n\n"
+            f"📞 {CAFE_PHONE}\n⏳ Готовим!",
+            reply_markup=create_menu_keyboard()
+        )
+        await state.clear()
+        
+    elif message.text == "📝 Меню":
+        await state.clear()
+        await message.answer("☕ Меню:", reply_markup=create_menu_keyboard())
+    else:
+        await message.answer("❌ Нажмите кнопку", reply_markup=create_confirm_keyboard())
+
         
         await message.answer(
             f"🎉 <b>Заказ #{order_num} принят!</b>\n\n🥤 {drink} × {quantity}\n💰 {total}₽\n\n📞 {CAFE_PHONE}\n⏳ Готовим!",
