@@ -2,26 +2,25 @@ import os
 import json
 import logging
 import asyncio
-import threading
-from aiogram import Bot, Dispatcher, types, executor
+from aiogram import Bot, Dispatcher, types, F
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
+from aiogram.dispatcher.webhook import get_new_configured_app
 from aiohttp import web
 from datetime import datetime, timezone, timedelta
 from collections import defaultdict
 import time
 
-# ========================================
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# ========================================
 MSK_TZ = timezone(timedelta(hours=3))
 WORK_START = 9
 WORK_END = 21
 last_orders = defaultdict(float)
 
-# ========================================
 def load_config():
     try:
         with open('config.json', 'r', encoding='utf-8') as f:
@@ -53,9 +52,12 @@ ADMIN_ID = int(cafe_config["admin_chat_id"])
 MENU = dict(cafe_config["menu"])
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+WEBAPP_HOST = os.getenv('WEBAPP_HOST', 'chatbotify-2tjd.onrender.com')
 WEBAPP_PORT = int(os.getenv('PORT', 10000))
+WEBHOOK_PATH = f'/{BOT_TOKEN}'
 
-bot = Bot(token=BOT_TOKEN, parse_mode=types.ParseMode.HTML)
+# ========================================
+bot = Bot(token=BOT_TOKEN, parse_mode='HTML')
 storage = MemoryStorage()
 dp = Dispatcher(bot, storage=storage)
 
@@ -64,22 +66,17 @@ class OrderStates(StatesGroup):
     waiting_for_confirmation = State()
 
 # ========================================
-# ВСЕ ФУНКЦИИ ОСТАЮТСЯ ТАКИЕ ЖЕ (get_moscow_time, is_cafe_open, get_work_status, клавиатуры, handlers...)
 def get_moscow_time():
     return datetime.now(MSK_TZ)
 
 def is_cafe_open():
-    msk_hour = get_moscow_time().hour
-    return WORK_START <= msk_hour < WORK_END
+    return WORK_START <= get_moscow_time().hour < WORK_END
 
 def get_work_status():
     msk_hour = get_moscow_time().hour
     if is_cafe_open():
-        time_left = WORK_END - msk_hour
-        return f"🟢 <b>Открыто</b> (ещё {time_left} ч.)"
-    else:
-        next_open = f"{WORK_START}:00"
-        return f"🔴 <b>Закрыто</b>\\n🕐 Открываемся: {next_open} (МСК)"
+        return f"🟢 <b>Открыто</b> (ещё {WORK_END-msk_hour} ч.)"
+    return f"🔴 <b>Закрыто</b>\\n🕐 Открываемся: {WORK_START}:00 (МСК)"
 
 def get_menu_keyboard():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
@@ -118,7 +115,6 @@ def get_closed_message():
     )
 
 # ========================================
-# HANDLERS (копируй из v9.0 полностью - они работают)
 @dp.message_handler(commands=['start', 'help'])
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.finish()
@@ -136,12 +132,8 @@ async def cmd_start(message: types.Message, state: FSMContext):
     else:
         await message.answer(get_closed_message(), reply_markup=get_info_keyboard())
 
-# ... (ВСЕ ОСТАЛЬНЫЕ HANDLERS ТАКИЕ ЖЕ как в v9.0: drink_selected, process_quantity, process_confirmation, send_order_to_admin, call_phone, work_hours, echo)
-
 @dp.message_handler(lambda m: m.text in MENU)
 async def drink_selected(message: types.Message, state: FSMContext):
-    logger.info(f"🥤 {message.text} от {message.from_user.id}")
-    
     if not is_cafe_open():
         await message.answer(get_closed_message(), reply_markup=get_info_keyboard())
         return
@@ -164,8 +156,6 @@ async def drink_selected(message: types.Message, state: FSMContext):
 
 @dp.message_handler(state=OrderStates.waiting_for_quantity)
 async def process_quantity(message: types.Message, state: FSMContext):
-    logger.info(f"📊 {message.text} от {message.from_user.id}")
-    
     if message.text == "🔙 Отмена":
         await state.finish()
         await message.answer("❌ Заказ отменён ☕", reply_markup=get_correct_keyboard())
@@ -199,8 +189,6 @@ async def process_quantity(message: types.Message, state: FSMContext):
 
 @dp.message_handler(state=OrderStates.waiting_for_confirmation)
 async def process_confirmation(message: types.Message, state: FSMContext):
-    logger.info(f"✅ {message.text} от {message.from_user.id}")
-    
     if "Подтвердить" in message.text:
         data = await state.get_data()
         order_data = {
@@ -226,11 +214,10 @@ async def process_confirmation(message: types.Message, state: FSMContext):
         )
         
         await send_order_to_admin(order_data)
+    else:
         await state.finish()
-        return
-    
+        await message.answer("🔙 В меню ☕", reply_markup=get_correct_keyboard())
     await state.finish()
-    await message.answer("🔙 В меню ☕", reply_markup=get_correct_keyboard())
 
 async def send_order_to_admin(order_data):
     msk_time = get_moscow_time().strftime("%H:%M")
@@ -245,9 +232,9 @@ async def send_order_to_admin(order_data):
     )
     try:
         await bot.send_message(ADMIN_ID, text)
-        logger.info(f"✅ Заказ #{order_data['user_id']} админу OK")
+        logger.info(f"✅ Заказ #{order_data['user_id']} админу")
     except Exception as e:
-        logger.error(f"❌ Админ ошибка: {e}")
+        logger.error(f"❌ Админ: {e}")
 
 @dp.message_handler(lambda m: m.text == "📞 Позвонить")
 async def call_phone(message: types.Message):
@@ -270,8 +257,6 @@ async def work_hours(message: types.Message):
 @dp.message_handler()
 async def echo(message: types.Message, state: FSMContext):
     await state.finish()
-    logger.info(f"❓ Неизвестное: '{message.text}' от {message.from_user.id}")
-    
     if is_cafe_open():
         await message.answer(
             f"❓ <b>{CAFE_NAME}</b>\\n\\n"
@@ -283,37 +268,32 @@ async def echo(message: types.Message, state: FSMContext):
         await message.answer(get_closed_message(), reply_markup=get_info_keyboard())
 
 # ========================================
-async def on_startup(dp):
+async def on_startup(app):
+    webhook_url = f"https://{WEBAPP_HOST}/{WEBHOOK_PATH}"
+    await bot.set_webhook(webhook_url)
+    logger.info(f"✅ WEBHOOK: {webhook_url}")
     msk_time = get_moscow_time().strftime("%H:%M")
-    logger.info(f"🚀 v9.1 POLLING LIVE — {CAFE_NAME} | MSK: {msk_time} | "
+    logger.info(f"🚀 v9.2 LIVE — {CAFE_NAME} | MSK: {msk_time} | "
                f"{'🟢 ОТКРЫТО' if is_cafe_open() else '🔴 ЗАКРЫТО'}")
-    logger.info("🏥 Healthcheck: CafeBotify v9.1 LIVE ✅")
-    logger.info("💰 START 2990₽/мес Готов к продажам! 🚀")
-
-async def on_shutdown(dp):
-    await dp.storage.close()
-    logger.info("🛑 CafeBotify STOP")
+    logger.info("🏥 Healthcheck OK | 💰 START 2990₽/мес Готово! 🚀")
 
 # ========================================
 async def healthcheck(request):
-    return web.Response(text="CafeBotify v9.1 LIVE ✅", status=200)
+    return web.json_response({"status": "CafeBotify v9.2 LIVE ✅"}, status=200)
 
-def run_healthcheck():
-    app = web.Application()
+async def main():
+    # ✅ ЕДИНЫЙ aiohttp app для Render + Aiogram
+    app = get_new_configured_app(dispatcher=dp, path=WEBHOOK_PATH)
     app.router.add_get('/', healthcheck)
-    web.run_app(app, host='0.0.0.0', port=WEBAPP_PORT)
+    
+    app.on_startup.append(on_startup)
+    
+    # ✅ Render требует 0.0.0.0:PORT
+    host = '0.0.0.0'
+    port = WEBAPP_PORT
+    
+    logger.info(f"🎬 v9.2 START — {CAFE_NAME} | HOST: {host}:{port}")
+    web.run_app(app, host=host, port=port)
 
 if __name__ == '__main__':
-    logger.info(f"🎬 v9.1 START — {CAFE_NAME} | PORT: {WEBAPP_PORT}")
-    
-    # ✅ Healthcheck в отдельном потоке
-    health_thread = threading.Thread(target=run_healthcheck, daemon=True)
-    health_thread.start()
-    
-    # ✅ Aiogram polling (работает 24/7 на Render Free)
-    executor.start_polling(
-        dispatcher=dp,
-        on_startup=on_startup,
-        on_shutdown=on_shutdown,
-        skip_updates=True
-    )
+    asyncio.run(main())
