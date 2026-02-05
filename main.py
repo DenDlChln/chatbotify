@@ -61,7 +61,7 @@ CAFE_PHONE = cafe_config["phone"]
 ADMIN_ID = int(cafe_config["admin_chat_id"])
 MENU = dict(cafe_config["menu"])
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", 8388711764:AAFmo3rYdgiBYKC6e9ejFEAdLiQAKkHuWRA)
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 REDIS_URL = os.getenv("REDIS_URL", redis://red-d625kf0nputs739fssr0:6379)
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "cafebot123")
 HOSTNAME = os.getenv('RENDER_EXTERNAL_HOSTNAME', 'chatbotify-2tjd.onrender.com')
