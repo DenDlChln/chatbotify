@@ -2,7 +2,7 @@
 # CafeBotify — START v1.0 (DEMO)
 # Меню и часы работы из config.json
 # Rate-limit: 1 минута, ставится только после подтверждённого заказа
-# NEW: Админ отвечает клиенту командой: /reply <user_id> <текст>
+# NEW: В уведомлении админу есть ссылка, открывающая чат с клиентом
 # =========================
 
 import os
@@ -324,17 +324,17 @@ async def process_confirmation(message: Message, state: FSMContext):
 
         user_name = message.from_user.username or message.from_user.first_name or "Клиент"
         user_id = message.from_user.id
+        user_link = f'<a href="tg://user?id={user_id}">{user_name}</a>'
 
         admin_message = (
             f"🔔 <b>НОВЫЙ ЗАКАЗ #{order_num}</b> | {CAFE_NAME}\n\n"
-            f"<b>{user_name}</b>\n"
+            f"{user_link}\n"
             f"<code>{user_id}</code>\n\n"
             f"{drink}\n"
             f"{quantity} порций\n"
             f"<b>{total} ₽</b>\n\n"
             f"<code>{CAFE_PHONE}</code>\n\n"
-            f"Чтобы ответить клиенту, напиши:\n"
-            f"<code>/reply {user_id} Привет, заказ принят</code>"
+            f"Нажми на имя, чтобы открыть чат и ответить клиенту."
         )
 
         await message.bot.send_message(
@@ -397,7 +397,7 @@ async def show_hours(message: Message):
     else:
         text = (
             f"{name}, спасибо что заглянул!\n\n"
-            f"🕐 <b>Сейчас:</b> {msk_time} (МСК)\n"
+            f"🕐 <b>Сейчас:</b> {msк_time} (МСК)\n"
             f"🏪 {get_work_status()}\n\n"
             f"📞 Телефон: <code>{CAFE_PHONE}</code>\n"
             f"Пока можем показать меню — напиши /start."
@@ -421,45 +421,6 @@ async def stats_command(message: Message):
         await message.answer(stats_text)
     except Exception:
         await message.answer("❌ Ошибка статистики")
-
-
-# -------------------------
-# Админ: /reply <user_id> <текст>
-# -------------------------
-@router.message(Command("reply"))
-async def admin_reply_command(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-
-    # /reply <id> <text...>
-    parts = (message.text or "").split(maxsplit=2)
-    if len(parts) < 3:
-        await message.answer(
-            "Формат: <code>/reply 6070166803 Привет, заказ принят</code>\n"
-            "ID клиента видно в уведомлении о заказе."
-        )
-        return
-
-    _, user_id_str, reply_text = parts
-    try:
-        target_user_id = int(user_id_str)
-    except ValueError:
-        await message.answer("Некорректный ID клиента. Пример: /reply 6070166803 Текст")
-        return
-
-    reply_text = reply_text.strip()
-    if not reply_text:
-        await message.answer("Текст сообщения пустой.")
-        return
-
-    try:
-        await message.bot.send_message(
-            target_user_id,
-            f"💬 Сообщение от <b>{CAFE_NAME}</b>:\n\n{reply_text}",
-        )
-        await message.answer("✅ Отправлено клиенту.")
-    except Exception as e:
-        await message.answer(f"❌ Не удалось отправить клиенту: {e}")
 
 
 # -------------------------
