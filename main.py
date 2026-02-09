@@ -588,6 +588,5 @@ async def help_command(message: Message):
         "• Подключение 2 990 ₽ в месяц за одну точку\n\n"
         "Хотите такой бот для своей кофейни?\n"
         "Связаться в Telegram: @denvyd"
-        "Лендинг: https://your-landing.com\n" 
     )
     await message.answer(text)
