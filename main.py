@@ -2,8 +2,12 @@
 # CafeBotify — START v1.0 (DEMO)
 # Меню и часы работы из config.json
 # Rate-limit: 1 минута, ставится только после подтверждённого заказа
-# NEW: Админ отвечает клиенту командой: /reply привет, позволь уточнить…
-#      ID клиента подставляется автоматически (последний заказ)
+# NEW:
+# 1) Админ отвечает, нажав на имя клиента (tg://user?id=...)
+# 2) Телефон кафе убран из уведомления админу
+# 3) Приветствие /start — 5 тёплых вариантов (рандом)
+# 4) После выбора напитка — 8 тёплых вариантов (рандом)
+# 5) Завершение заказа — 5 тёплых вариантов (рандом)
 # =========================
 
 import os
@@ -11,6 +15,7 @@ import json
 import logging
 import asyncio
 import time
+import random
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, Optional, Tuple
 
@@ -144,6 +149,8 @@ def get_work_status() -> str:
     return f"🔴 <b>Закрыто</b>\n🕐 Открываемся: {WORK_START}:00 (МСК)"
 
 
+# ---------- клавиатуры ----------
+
 def create_menu_keyboard() -> ReplyKeyboardMarkup:
     keyboard = [[KeyboardButton(text=drink)] for drink in MENU.keys()]
     keyboard.append([KeyboardButton(text="📞 Позвонить"), KeyboardButton(text="⏰ Часы работы")])
@@ -174,6 +181,36 @@ def create_confirm_keyboard() -> ReplyKeyboardMarkup:
         resize_keyboard=True,
         one_time_keyboard=True,
     )
+
+
+# ---------- тексты ----------
+
+WELCOME_VARIANTS = [
+    "Рад тебя видеть, {name}! Сегодня что-то классическое или попробуем новинку?",
+    "{name}, добро пожаловать! Я уже грею молоко — выбирай, что приготовить.",
+    "Заходи, {name}! Сейчас самое время для вкусного перерыва.",
+    "{name}, привет! Устроим небольшой кофейный ритуал?",
+    "Отлично, что заглянул, {name}! Давай подберём идеальный напиток под настроение.",
+]
+
+CHOICE_VARIANTS = [
+    "Отличный выбор! Такое сейчас особенно популярно.",
+    "Классика, которая никогда не подводит.",
+    "Мне тоже нравится этот вариант — не прогадаешь.",
+    "Прекрасный вкус, {name}! Это один из хитов нашего меню.",
+    "Вот это да, {name}! Любители хорошего кофе тебя поймут.",
+    "Смело! Такой выбор обычно делают настоящие ценители.",
+    "{name}, ты знаешь толк в напитках.",
+    "Звучит вкусно — уже представляю аромат.",
+]
+
+FINISH_VARIANTS = [
+    "Спасибо за заказ! Буду рад увидеть тебя снова.",
+    "Рад был помочь с выбором. Заглядывай ещё — всегда ждём.",
+    "Отличный заказ! Надеюсь, это сделает день чуточку лучше.",
+    "Спасибо, что выбрал именно нас. До следующей кофейной паузы!",
+    "Заказ готовим с заботой. Возвращайся, когда захочется повторить.",
+]
 
 
 def get_closed_message() -> str:
@@ -207,10 +244,6 @@ def _rate_limit_key(user_id: int) -> str:
     return f"rate_limit:{user_id}"
 
 
-def _last_reply_user_key(admin_id: int) -> str:
-    return f"last_reply_user:{admin_id}"
-
-
 # -------------------------
 # Пользовательский флоу
 # -------------------------
@@ -218,12 +251,17 @@ def _last_reply_user_key(admin_id: int) -> str:
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
     user_id = message.from_user.id
+    name = get_user_name(message)
     msk_time = get_moscow_time().strftime("%H:%M")
     logger.info(f"👤 /start от {user_id} | MSK: {msk_time}")
 
+    welcome = random.choice(WELCOME_VARIANTS).format(name=name)
+
     if is_cafe_open():
         await message.answer(
-            f"<b>{CAFE_NAME}</b>\n\n🕐 <i>Московское время: {msk_time}</i>\n🏪 {get_work_status()}\n\n"
+            f"{welcome}\n\n"
+            f"🕐 <i>Московское время: {msk_time}</i>\n"
+            f"🏪 {get_work_status()}\n\n"
             f"☕ <b>Выберите напиток:</b>",
             reply_markup=create_menu_keyboard(),
         )
@@ -234,6 +272,7 @@ async def cmd_start(message: Message, state: FSMContext):
 @router.message(F.text.in_(set(MENU.keys())))
 async def drink_selected(message: Message, state: FSMContext):
     user_id = message.from_user.id
+    name = get_user_name(message)
     logger.info(f"🥤 {message.text} от {user_id}")
 
     if not is_cafe_open():
@@ -246,7 +285,10 @@ async def drink_selected(message: Message, state: FSMContext):
     await state.set_state(OrderStates.waiting_for_quantity)
     await state.set_data({"drink": drink, "price": price})
 
+    choice_text = random.choice(CHOICE_VARIANTS).format(name=name)
+
     await message.answer(
+        f"{choice_text}\n\n"
         f"🥤 <b>{drink}</b>\n💰 <b>{price} ₽</b>\n\n📝 <b>Сколько порций?</b>",
         reply_markup=create_quantity_keyboard(),
     )
@@ -310,7 +352,6 @@ async def process_confirmation(message: Message, state: FSMContext):
         user_name = message.from_user.username or message.from_user.first_name or "Клиент"
         user_id = message.from_user.id
 
-        # Сохраняем ID клиента для быстрого /reply от админа (TTL 30 минут)
         try:
             r_client = await get_redis_client()
             await r_client.hset(
@@ -327,22 +368,21 @@ async def process_confirmation(message: Message, state: FSMContext):
             await r_client.expire(order_id, 86400)
             await r_client.incr("stats:total_orders")
             await r_client.incr(f"stats:drink:{drink}")
-            # ключ для быстрого ответа
-            await r_client.setex(_last_reply_user_key(ADMIN_ID), 1800, user_id)  # 30 мин
             await r_client.aclose()
         except Exception:
             pass
 
+        # Ссылка, открывающая личный чат с клиентом
+        user_link = f'<a href="tg://user?id={user_id}">{user_name}</a>'
+
         admin_message = (
             f"🔔 <b>НОВЫЙ ЗАКАЗ #{order_num}</b> | {CAFE_NAME}\n\n"
-            f"<b>{user_name}</b>\n"
+            f"{user_link}\n"
             f"<code>{user_id}</code>\n\n"
             f"{drink}\n"
             f"{quantity} порций\n"
             f"<b>{total} ₽</b>\n\n"
-            f"<code>{CAFE_PHONE}</code>\n\n"
-            f"Чтобы ответить клиенту, просто напиши:\n"
-            f"<code>/reply привет, позволь уточнить…</code>"
+            f"Нажми на имя, чтобы открыть чат и ответить клиенту."
         )
 
         await message.bot.send_message(
@@ -351,11 +391,13 @@ async def process_confirmation(message: Message, state: FSMContext):
             disable_web_page_preview=True,
         )
 
+        finish_text = random.choice(FINISH_VARIANTS)
+
         await message.answer(
             f"🎉 <b>Заказ #{order_num} принят!</b>\n\n"
             f"🥤 {drink} × {quantity}\n"
             f"💰 {total}₽\n\n"
-            f"📞 {CAFE_PHONE}\n⏳ Готовим!",
+            f"{finish_text}",
             reply_markup=create_menu_keyboard(),
         )
         await state.clear()
@@ -429,56 +471,6 @@ async def stats_command(message: Message):
         await message.answer(stats_text)
     except Exception:
         await message.answer("❌ Ошибка статистики")
-
-
-# -------------------------
-# Админ: /reply <текст> (ID клиента берём из Redis)
-# -------------------------
-@router.message(Command("reply"))
-async def admin_reply_command(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-
-    # /reply <text...>
-    parts = (message.text or "").split(maxsplit=1)
-    if len(parts) < 2 or not parts[1].strip():
-        await message.answer(
-            "Напиши так:\n"
-            "<code>/reply привет, позволь уточнить…</code>\n\n"
-            "ID клиента подставлю автоматически — по последнему заказу."
-        )
-        return
-
-    reply_text = parts[1].strip()
-
-    try:
-        r_client = await get_redis_client()
-        target_user_raw = await r_client.get(_last_reply_user_key(ADMIN_ID))
-        await r_client.aclose()
-    except Exception:
-        target_user_raw = None
-
-    if not target_user_raw:
-        await message.answer(
-            "Не вижу активного клиента для ответа.\n"
-            "Сначала дождись нового заказа, потом жми /reply."
-        )
-        return
-
-    try:
-        target_user_id = int(target_user_raw)
-    except ValueError:
-        await message.answer("Сохранённый ID клиента повреждён. Жди нового заказа и попробуй снова.")
-        return
-
-    try:
-        await message.bot.send_message(
-            target_user_id,
-            f"💬 Сообщение от <b>{CAFE_NAME}</b>:\n\n{reply_text}",
-        )
-        await message.answer("✅ Отправлено клиенту.")
-    except Exception as e:
-        await message.answer(f"❌ Не удалось отправить клиенту: {e}")
 
 
 # -------------------------
