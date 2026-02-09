@@ -228,7 +228,9 @@ async def get_redis_client():
 
 def _rate_limit_key(user_id: int) -> str:
     return f"rate_limit:{user_id}"
-
+def _admin_reply_key(admin_id: int) -> str:
+    return f"admin_reply:{admin_id}"
+    
 
 # -------------------------
 # Пользовательский флоу
@@ -448,74 +450,95 @@ async def stats_command(message: Message):
 
 
 # -------------------------
-# Админ: "Ответить клиенту"
+# Админ: "Ответить клиенту" (без FSM)
 # -------------------------
 @router.callback_query(F.data.startswith("reply:"))
-async def admin_reply_button(cb: CallbackQuery, state: FSMContext):
+async def admin_reply_button(cb: CallbackQuery):
+    # Только настоящий админ
     if cb.from_user.id != ADMIN_ID:
         await cb.answer("Недоступно", show_alert=True)
         return
 
+    # Достаём user_id клиента из callback_data
     try:
         target_user_id = int((cb.data or "").split("reply:", 1)[1])
     except Exception:
         await cb.answer("Ошибка кнопки", show_alert=True)
         return
 
-    await state.set_state(AdminReplyStates.waiting_for_reply_text)
-    await state.update_data(reply_target_user_id=target_user_id)
+    # Запоминаем, кому сейчас отвечает админ
+    try:
+        r_client = await get_redis_client()
+        await r_client.setex(_admin_reply_key(ADMIN_ID), 300, target_user_id)  # 5 минут на ответ
+        await r_client.aclose()
+    except Exception:
+        pass
 
-    await cb.answer("Ок")
+    await cb.answer()  # убираем "Загрузка..."
     await cb.message.answer(
         f"✍️ Напиши сообщение клиенту:\n<code>{target_user_id}</code>\n\n"
         f"Отправь текст одним сообщением.\n"
-        f"Чтобы отменить — нажми «❌ Отмена».",
-        reply_markup=create_admin_cancel_keyboard(),
+        f"Чтобы отменить — /cancel.",
     )
 
 
-@router.message(StateFilter(AdminReplyStates.waiting_for_reply_text), F.text == "❌ Отмена")
-async def admin_reply_cancel(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
-        return
-    await state.clear()
-    await message.answer("Ок, отменил. Возвращаюсь в обычный режим.")
-
-
 @router.message(Command("cancel"))
-async def admin_cancel_command(message: Message, state: FSMContext):
+async def admin_cancel_command(message: Message):
     if message.from_user.id != ADMIN_ID:
         return
-    await state.clear()
-    await message.answer("Ок, отменил.")
+    try:
+        r_client = await get_redis_client()
+        await r_client.delete(_admin_reply_key(ADMIN_ID))
+        await r_client.aclose()
+    except Exception:
+        pass
+    await message.answer("Ок, отменил ответ клиенту.")
 
 
-@router.message(StateFilter(AdminReplyStates.waiting_for_reply_text))
-async def admin_send_reply(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
+@router.message()
+async def admin_maybe_reply(message: Message):
+    # Любое обычное сообщение админа проверяем: не ответ ли это клиенту
+    if message.from_user.id != ADMIN_ID or not message.text:
         return
 
-    text = (message.text or "").strip()
-    if not text or text == "❌ Отмена":
-        return
-
-    data = await state.get_data()
-    target_user_id = data.get("reply_target_user_id")
-    if not target_user_id:
-        await state.clear()
-        await message.answer("Не вижу, кому отвечать. Нажми кнопку «Ответить» ещё раз.")
+    text = message.text.strip()
+    if text.startswith("/"):  # Команды обрабатывают другие хендлеры
         return
 
     try:
+        r_client = await get_redis_client()
+        target_user_id_raw = await r_client.get(_admin_reply_key(ADMIN_ID))
+        await r_client.aclose()
+    except Exception:
+        target_user_id_raw = None
+
+    if not target_user_id_raw:
+        # Нет активного "режима ответа" — игнорируем
+        return
+
+    try:
+        target_user_id = int(target_user_id_raw)
+    except Exception:
+        await message.answer("❌ Не могу определить клиента, нажми «Ответить клиенту» ещё раз.")
+        return
+
+    # Пытаемся отправить клиенту
+    try:
         await message.bot.send_message(
-            int(target_user_id),
+            target_user_id,
             f"💬 Сообщение от <b>{CAFE_NAME}</b>:\n\n{text}",
         )
         await message.answer("✅ Отправлено клиенту.")
     except Exception as e:
         await message.answer(f"❌ Не удалось отправить клиенту: {e}")
 
-    await state.clear()
+    # Сбрасываем режим ответа
+    try:
+        r_client = await get_redis_client()
+        await r_client.delete(_admin_reply_key(ADMIN_ID))
+        await r_client.aclose()
+    except Exception:
+        pass
 
 
 # -------------------------
