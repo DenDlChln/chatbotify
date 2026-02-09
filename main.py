@@ -2,7 +2,7 @@
 # CafeBotify — START v1.0 (DEMO)
 # Меню и часы работы из config.json
 # Rate-limit: 1 минута, ставится только после подтверждённого заказа
-# NEW: Админ может нажать "✉️ Ответить клиенту" и написать клиенту в личку
+# NEW: Админ отвечает клиенту командой: /reply <user_id> <текст>
 # =========================
 
 import os
@@ -24,9 +24,6 @@ from aiogram.types import (
     Message,
     ReplyKeyboardMarkup,
     KeyboardButton,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-    CallbackQuery,
 )
 from aiogram.filters import CommandStart, Command, StateFilter
 from aiogram.client.default import DefaultBotProperties
@@ -178,14 +175,6 @@ def create_confirm_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
-def create_admin_reply_inline_kb(user_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="✉️ Ответить клиенту", callback_data=f"reply:{user_id}")]
-        ]
-    )
-
-
 def get_closed_message() -> str:
     menu_text = " • ".join([f"<b>{drink}</b> {price}₽" for drink, price in MENU.items()])
     return (
@@ -215,10 +204,6 @@ async def get_redis_client():
 
 def _rate_limit_key(user_id: int) -> str:
     return f"rate_limit:{user_id}"
-
-
-def _admin_reply_key(admin_id: int) -> str:
-    return f"admin_reply:{admin_id}"
 
 
 # -------------------------
@@ -347,14 +332,15 @@ async def process_confirmation(message: Message, state: FSMContext):
             f"{drink}\n"
             f"{quantity} порций\n"
             f"<b>{total} ₽</b>\n\n"
-            f"<code>{CAFE_PHONE}</code>"
+            f"<code>{CAFE_PHONE}</code>\n\n"
+            f"Чтобы ответить клиенту, напиши:\n"
+            f"<code>/reply {user_id} Привет, заказ принят</code>"
         )
 
         await message.bot.send_message(
             ADMIN_ID,
             admin_message,
             disable_web_page_preview=True,
-            reply_markup=create_admin_reply_inline_kb(user_id),
         )
 
         await message.answer(
@@ -438,90 +424,42 @@ async def stats_command(message: Message):
 
 
 # -------------------------
-# Админ: "Ответить клиенту"
+# Админ: /reply <user_id> <текст>
 # -------------------------
-@router.callback_query(F.data.startswith("reply:"))
-async def admin_reply_button(cb: CallbackQuery):
-    logger.info(f"🔁 reply callback: from={cb.from_user.id}, data={cb.data}")
-
-    if cb.from_user.id != ADMIN_ID:
-        await cb.answer("Недоступно", show_alert=True)
-        return
-
-    try:
-        target_user_id = int((cb.data or "").split("reply:", 1)[1])
-    except Exception:
-        await cb.answer("Ошибка кнопки", show_alert=True)
-        return
-
-    try:
-        r_client = await get_redis_client()
-        await r_client.setex(_admin_reply_key(ADMIN_ID), 300, target_user_id)
-        await r_client.aclose()
-    except Exception:
-        pass
-
-    await cb.answer()
-    await cb.message.answer(
-        f"✍️ Напиши сообщение клиенту:\n<code>{target_user_id}</code>\n\n"
-        f"Отправь текст одним сообщением.\n"
-        f"Чтобы отменить — /cancel.",
-    )
-
-
-@router.message(Command("cancel"))
-async def admin_cancel_command(message: Message):
+@router.message(Command("reply"))
+async def admin_reply_command(message: Message):
     if message.from_user.id != ADMIN_ID:
         return
-    try:
-        r_client = await get_redis_client()
-        await r_client.delete(_admin_reply_key(ADMIN_ID))
-        await r_client.aclose()
-    except Exception:
-        pass
-    await message.answer("Ок, отменил ответ клиенту.")
 
-
-@router.message()
-async def admin_maybe_reply(message: Message):
-    if message.from_user.id != ADMIN_ID or not message.text:
+    # /reply <id> <text...>
+    parts = (message.text or "").split(maxsplit=2)
+    if len(parts) < 3:
+        await message.answer(
+            "Формат: <code>/reply 6070166803 Привет, заказ принят</code>\n"
+            "ID клиента видно в уведомлении о заказе."
+        )
         return
 
-    text = message.text.strip()
-    if text.startswith("/"):
+    _, user_id_str, reply_text = parts
+    try:
+        target_user_id = int(user_id_str)
+    except ValueError:
+        await message.answer("Некорректный ID клиента. Пример: /reply 6070166803 Текст")
         return
 
-    try:
-        r_client = await get_redis_client()
-        target_user_id_raw = await r_client.get(_admin_reply_key(ADMIN_ID))
-        await r_client.aclose()
-    except Exception:
-        target_user_id_raw = None
-
-    if not target_user_id_raw:
-        return
-
-    try:
-        target_user_id = int(target_user_id_raw)
-    except Exception:
-        await message.answer("❌ Не могу определить клиента, нажми «Ответить клиенту» ещё раз.")
+    reply_text = reply_text.strip()
+    if not reply_text:
+        await message.answer("Текст сообщения пустой.")
         return
 
     try:
         await message.bot.send_message(
             target_user_id,
-            f"💬 Сообщение от <b>{CAFE_NAME}</b>:\n\n{text}",
+            f"💬 Сообщение от <b>{CAFE_NAME}</b>:\n\n{reply_text}",
         )
         await message.answer("✅ Отправлено клиенту.")
     except Exception as e:
         await message.answer(f"❌ Не удалось отправить клиенту: {e}")
-
-    try:
-        r_client = await get_redis_client()
-        await r_client.delete(_admin_reply_key(ADMIN_ID))
-        await r_client.aclose()
-    except Exception:
-        pass
 
 
 # -------------------------
