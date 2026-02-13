@@ -5,11 +5,11 @@
 #
 # DEMO:
 # - После заказа всем тестерам (кто нажал /start) приходят 2 сообщения "как видит админ"
-# - После брони всем тестерам приходит 2 сообщения "как видит админ"
+# - После брони всем тестерам (кто нажал /start) приходят 2 сообщения "как видит админ"
 # - Кнопка 📊 Статистика видна всем (не-админу показываем демо-отчёт)
 # - 🛠 Меню: админ может добавлять/править/удалять позиции (хранение в Redis)
 #
-# NEW (сейчас):
+# NEW:
 # - Время готовности: после "Подтвердить" пользователь выбирает "сейчас/10/20/30/другое"
 # =========================
 
@@ -603,7 +603,7 @@ async def cmd_start(message: Message, state: FSMContext):
 
 
 # -------------------------
-# Кнопки (общие)
+# Общие кнопки (важно: выше, чем общий текстовый хендлер)
 # -------------------------
 
 @router.message(F.text == BTN_STATS)
@@ -628,6 +628,7 @@ async def stats_command(message: Message):
 async def call_phone(message: Message):
     await register_demo_subscriber(message.from_user.id)
     name = get_user_name(message)
+
     if is_cafe_open():
         text = (
             f"{name}, буду рад помочь!\n\n"
@@ -660,29 +661,23 @@ async def show_hours(message: Message):
 
 
 # -------------------------
-# Заказ: выбор напитка
+# Заказ: FSM
 # -------------------------
 
-@router.message(StateFilter(None), F.text.in_(lambda: set(MENU.keys())))
-async def drink_selected(message: Message, state: FSMContext):
-    await register_demo_subscriber(message.from_user.id)
-
-    user_id = message.from_user.id
-    name = get_user_name(message)
-    logger.info(f"🥤 {message.text} от {user_id}")
-
+async def _start_order(message: Message, state: FSMContext, drink: str):
     if not is_cafe_open():
         await message.answer(get_closed_message(), reply_markup=create_info_keyboard())
         return
 
-    drink = message.text
-    price = MENU[drink]
+    price = MENU.get(drink)
+    if price is None:
+        await message.answer("Этого напитка уже нет в меню. Нажмите /start.", reply_markup=create_menu_keyboard())
+        return
 
     await state.set_state(OrderStates.waiting_for_quantity)
     await state.set_data({"drink": drink, "price": price})
 
-    choice_text = random.choice(CHOICE_VARIANTS).format(name=name)
-
+    choice_text = random.choice(CHOICE_VARIANTS).format(name=get_user_name(message))
     await message.answer(
         f"{choice_text}\n\n"
         f"🥤 <b>{html.quote(drink)}</b>\n💰 <b>{price} ₽</b>\n\n📝 <b>Сколько порций?</b>",
@@ -735,19 +730,14 @@ async def process_confirmation(message: Message, state: FSMContext):
         await message.answer("❌ Нажмите кнопку", reply_markup=create_confirm_keyboard())
         return
 
-    # NEW: шаг выбора времени готовности
     await state.set_state(OrderStates.waiting_for_ready_time)
     await message.answer(
-        "⏱ <b>Когда удобно забрать заказ?</b>\n\n"
-        "Выберите вариант:",
+        "⏱ <b>Когда удобно забрать заказ?</b>\n\nВыберите вариант:",
         reply_markup=create_ready_time_keyboard(),
     )
 
 
 async def _finalize_order(message: Message, state: FSMContext, ready_in_min: int):
-    """
-    Финализация заказа: rate-limit, сохранение в Redis, демо-рассылка "как видит админ", ответ пользователю.
-    """
     user_id = message.from_user.id
 
     # rate-limit после финализации
@@ -774,7 +764,6 @@ async def _finalize_order(message: Message, state: FSMContext, ready_in_min: int
     order_num = order_id.split(":")[-1]
 
     user_name = message.from_user.username or message.from_user.first_name or "Клиент"
-
     ready_at_dt = get_moscow_time() + timedelta(minutes=max(0, ready_in_min))
     ready_at_str = ready_at_dt.strftime("%H:%M")
 
@@ -801,7 +790,7 @@ async def _finalize_order(message: Message, state: FSMContext, ready_in_min: int
     except Exception:
         pass
 
-    # DEMO: "как видит админ" всем тестерам + админу
+    # DEMO: "как видит админ"
     msg1, msg2 = build_admin_order_messages(
         order_num=order_num,
         user_id=user_id,
@@ -815,7 +804,6 @@ async def _finalize_order(message: Message, state: FSMContext, ready_in_min: int
     await send_to_demo_audience(message.bot, msg2, include_admin=True)
 
     finish_text = random.choice(FINISH_VARIANTS).format(name=get_user_name(message))
-
     if ready_in_min <= 0:
         ready_user_line = "⏱ Готовность: как можно скорее"
     else:
@@ -855,8 +843,7 @@ async def process_ready_time(message: Message, state: FSMContext):
     if message.text == BTN_READY_CUSTOM:
         await state.set_state(OrderStates.waiting_for_ready_custom)
         await message.answer(
-            "Введите число минут (например: <code>15</code>).\n"
-            "Можно от 5 до 120.",
+            "Введите число минут (например: <code>15</code>).\nМожно от 5 до 120.",
             reply_markup=ReplyKeyboardMarkup(
                 keyboard=[[KeyboardButton(text=BTN_CANCEL)]],
                 resize_keyboard=True,
@@ -882,11 +869,14 @@ async def process_ready_custom_minutes(message: Message, state: FSMContext):
         if not (5 <= mins <= 120):
             raise ValueError
     except Exception:
-        await message.answer("Нужно число от 5 до 120.", reply_markup=ReplyKeyboardMarkup(
-            keyboard=[[KeyboardButton(text=BTN_CANCEL)]],
-            resize_keyboard=True,
-            one_time_keyboard=True,
-        ))
+        await message.answer(
+            "Нужно число от 5 до 120.",
+            reply_markup=ReplyKeyboardMarkup(
+                keyboard=[[KeyboardButton(text=BTN_CANCEL)]],
+                resize_keyboard=True,
+                one_time_keyboard=True,
+            ),
+        )
         return
 
     await _finalize_order(message, state, mins)
@@ -908,8 +898,7 @@ async def booking_start(message: Message, state: FSMContext):
     await state.set_state(BookingStates.waiting_for_datetime)
     await message.answer(
         "📅 <b>Бронирование столика</b>\n\n"
-        "Напишите дату и время в формате:\n"
-        "<code>15.02 19:00</code>\n\n"
+        "Напишите дату и время в формате:\n<code>15.02 19:00</code>\n\n"
         "Или нажмите «Отмена».",
         reply_markup=create_booking_cancel_keyboard(),
     )
@@ -933,10 +922,7 @@ async def booking_datetime(message: Message, state: FSMContext):
 
     m = re.match(r"^\s*(\d{1,2})\.(\d{1,2})\s+(\d{1,2}):(\d{2})\s*$", message.text or "")
     if not m:
-        await message.answer(
-            "Не понял формат.\nНапишите так: <code>15.02 19:00</code>",
-            reply_markup=create_booking_cancel_keyboard(),
-        )
+        await message.answer("Не понял формат.\nНапишите так: <code>15.02 19:00</code>", reply_markup=create_booking_cancel_keyboard())
         return
 
     day, month, hour, minute = map(int, m.groups())
@@ -952,8 +938,7 @@ async def booking_datetime(message: Message, state: FSMContext):
     await state.set_state(BookingStates.waiting_for_people)
 
     await message.answer(
-        f"Отлично! 🗓 <b>{dt_str}</b>\n\n"
-        "Сколько гостей будет?",
+        f"Отлично! 🗓 <b>{dt_str}</b>\n\nСколько гостей будет?",
         reply_markup=create_booking_people_keyboard(),
     )
 
@@ -1038,7 +1023,7 @@ async def booking_finish(message: Message, state: FSMContext):
 
 
 # -------------------------
-# Редактирование меню (админ)
+# Меню-редактор (админ)
 # -------------------------
 
 def _menu_as_text() -> str:
@@ -1243,22 +1228,25 @@ async def menu_edit_remove(message: Message, state: FSMContext):
 
 
 # -------------------------
-# Help
+# ВАЖНО: общий обработчик текста (для выбора напитка)
 # -------------------------
 
-@router.message(Command("help"))
-async def help_command(message: Message):
+@router.message(StateFilter(None), F.text)
+async def any_text_outside_states(message: Message, state: FSMContext):
     await register_demo_subscriber(message.from_user.id)
-    text = (
-        "Этот бот — демо-ассистент для кофейни.\n\n"
-        "Что он умеет:\n"
-        "• Меню и быстрые заказы\n"
-        "• Время готовности (сейчас/через X минут)\n"
-        "• Заявки на бронирование\n"
-        "• Статистика (в демо — пример)\n\n"
-        "Связаться: @denvyd"
-    )
-    await message.answer(text, reply_markup=create_menu_keyboard())
+    text = (message.text or "").strip()
+
+    # Если это напиток — стартуем заказ
+    if text in MENU:
+        await _start_order(message, state, text)
+        return
+
+    # Игнорируем системные кнопки (их обработчики уже выше)
+    if _is_reserved_button(text):
+        return
+
+    # Лёгкая подсказка
+    await message.answer("Выбери напиток кнопкой в меню или нажми «Бронирование».", reply_markup=create_menu_keyboard())
 
 
 # -------------------------
