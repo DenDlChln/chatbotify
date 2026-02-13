@@ -1,22 +1,19 @@
 # =========================
-# CafeBotify — START v1.0 (DEMO)
-# Меню/часы/адрес/цикл возврата из config.json
+# CafeBotify — START v1.1 (DEMO)
 # Webhook + Redis (aiogram 3)
 #
-# Фичи:
-# - Заказ по кнопкам напитков (ReplyKeyboard)
-# - Время готовности: "Сейчас" / "Через 20 мин" / "Отмена"
-# - Бронирование (заявка -> DEMO аудитории "как видит админ")
-# - Статистика (админу реальная, остальным demo)
-# - Редактирование меню (админ, хранение в Redis)
-# - DEMO: "как видит админ" отправляем всем тестерам (кто нажал /start), включая админа
+# NEW: Сборный заказ (корзина)
+# - Можно добавить несколько позиций
+# - 🛒 Корзина / ✅ Оформить / 🧹 Очистить / ❌ Отменить заказ
+# - После ✅ Оформить -> подтверждение -> время готовности (Сейчас / Через 20 мин / Отмена)
 #
-# NEW: Умный возврат гостей (не "рассылка по базе", а триггер по активности)
-# - После каждого заказа сохраняем профиль клиента в Redis
-# - Если нет заказов RETURN_CYCLE_DAYS -> персональное сообщение
-# - Не чаще 1 раза в 30 дней
-# - Окно отправки 10:00–20:00 МСК
-# - Отписка: /offers_off, включить: /offers_on
+# Остальное:
+# - Адрес и цикл "умного возврата" из config.json
+# - Умный возврат гостей (триггер по неактивности, не чаще 1 раза в 30 дней)
+# - Бронирование
+# - Статистика
+# - Редактор меню (админ, Redis)
+# - DEMO: "как видит админ" уходит всем, кто нажал /start (и админу)
 # =========================
 
 import os
@@ -171,9 +168,10 @@ router = Router()
 
 
 class OrderStates(StatesGroup):
-    waiting_for_quantity = State()
-    waiting_for_confirmation = State()
-    waiting_for_ready_time = State()
+    waiting_for_quantity = State()        # выбираем кол-во для текущей позиции
+    cart = State()                        # корзина (можно добавлять ещё, очищать, отменять, оформить)
+    waiting_for_confirmation = State()    # подтверждение всего заказа (корзины)
+    waiting_for_ready_time = State()      # время готовности
 
 
 class BookingStates(StatesGroup):
@@ -320,12 +318,16 @@ async def customer_mark_order(
     user_id: int,
     first_name: str,
     username: str,
-    drink: str,
+    cart: Dict[str, int],
     total_sum: int,
 ):
     now_ts = int(time.time())
     customer_key = f"{CUSTOMER_KEY_PREFIX}{user_id}"
     drinks_key = f"{CUSTOMER_DRINKS_PREFIX}{user_id}"
+
+    last_drink = ""
+    for d in cart.keys():
+        last_drink = d
 
     try:
         r = await get_redis_client()
@@ -342,13 +344,14 @@ async def customer_mark_order(
             "username": username or "",
             "last_order_ts": now_ts,
             "last_order_sum": int(total_sum),
-            "last_drink": drink,
+            "last_drink": last_drink,
         })
 
         pipe.hincrby(customer_key, "total_orders", 1)
         pipe.hincrby(customer_key, "total_spent", int(total_sum))
 
-        pipe.hincrby(drinks_key, drink, 1)
+        for drink, qty in cart.items():
+            pipe.hincrby(drinks_key, drink, int(qty))
 
         await pipe.execute()
         await r.aclose()
@@ -488,7 +491,6 @@ async def smart_return_check_and_send(bot: Bot):
             except Exception:
                 pass
         except Exception:
-            # если нельзя отправить (пользователь удалил/заблокировал) — больше не трогаем
             try:
                 r = await get_redis_client()
                 await r.srem(CUSTOMERS_SET_KEY, user_id)
@@ -514,24 +516,41 @@ BTN_STATS = "📊 Статистика"
 BTN_BOOKING = "📅 Бронирование"
 BTN_MENU_EDIT = "🛠 Меню"
 
+# корзина
+BTN_CART = "🛒 Корзина"
+BTN_CHECKOUT = "✅ Оформить"
+BTN_CLEAR_CART = "🧹 Очистить"
+BTN_CANCEL_ORDER = "❌ Отменить заказ"
+
 BTN_CANCEL = "🔙 Отмена"
 BTN_BACK = "⬅️ Назад"
 
 BTN_CONFIRM = "Подтвердить"
 BTN_MENU = "Меню"
 
-# Время готовности (упрощено)
+# Время готовности
 BTN_READY_NOW = "🚶 Сейчас"
 BTN_READY_20 = "⏱ Через 20 мин"
+
 
 MENU_EDIT_ADD = "➕ Добавить позицию"
 MENU_EDIT_EDIT = "✏️ Изменить цену"
 MENU_EDIT_DEL = "🗑 Удалить позицию"
 
 
-def create_menu_keyboard() -> ReplyKeyboardMarkup:
-    keyboard = [[KeyboardButton(text=drink)] for drink in MENU.keys()]
-    keyboard.append([KeyboardButton(text=BTN_BOOKING), KeyboardButton(text=BTN_STATS)])
+def create_menu_keyboard(with_cart_actions: bool = False) -> ReplyKeyboardMarkup:
+    keyboard: list[list[KeyboardButton]] = []
+
+    if with_cart_actions:
+        keyboard.append([KeyboardButton(text=BTN_CART), KeyboardButton(text=BTN_CHECKOUT)])
+        keyboard.append([KeyboardButton(text=BTN_CLEAR_CART), KeyboardButton(text=BTN_CANCEL_ORDER)])
+
+    # напитки
+    for drink in MENU.keys():
+        keyboard.append([KeyboardButton(text=drink)])
+
+    # сервисные
+    keyboard.append([KeyboardButton(text=BTN_CART), KeyboardButton(text=BTN_BOOKING), KeyboardButton(text=BTN_STATS)])
     keyboard.append([KeyboardButton(text=BTN_CALL), KeyboardButton(text=BTN_HOURS), KeyboardButton(text=BTN_MENU_EDIT)])
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
@@ -539,7 +558,7 @@ def create_menu_keyboard() -> ReplyKeyboardMarkup:
 def create_info_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text=BTN_BOOKING), KeyboardButton(text=BTN_STATS)],
+            [KeyboardButton(text=BTN_CART), KeyboardButton(text=BTN_BOOKING), KeyboardButton(text=BTN_STATS)],
             [KeyboardButton(text=BTN_CALL), KeyboardButton(text=BTN_HOURS), KeyboardButton(text=BTN_MENU_EDIT)],
         ],
         resize_keyboard=True,
@@ -557,9 +576,12 @@ def create_quantity_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
-def create_confirm_keyboard() -> ReplyKeyboardMarkup:
+def create_confirm_keyboard_for_cart() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text=BTN_CONFIRM), KeyboardButton(text=BTN_MENU)]],
+        keyboard=[
+            [KeyboardButton(text=BTN_CONFIRM), KeyboardButton(text=BTN_CART)],
+            [KeyboardButton(text=BTN_CANCEL_ORDER)],
+        ],
         resize_keyboard=True,
         one_time_keyboard=True,
     )
@@ -672,11 +694,56 @@ def get_user_name(message: Message) -> str:
 def _is_reserved_button(text: str) -> bool:
     reserved = {
         BTN_CALL, BTN_HOURS, BTN_STATS, BTN_BOOKING, BTN_MENU_EDIT,
+        BTN_CART, BTN_CHECKOUT, BTN_CLEAR_CART, BTN_CANCEL_ORDER,
         BTN_CANCEL, BTN_BACK, BTN_CONFIRM, BTN_MENU,
         BTN_READY_NOW, BTN_READY_20,
         MENU_EDIT_ADD, MENU_EDIT_EDIT, MENU_EDIT_DEL,
     }
     return text in reserved
+
+
+# ---------- корзина helpers ----------
+
+def _get_cart(data: Dict[str, Any]) -> Dict[str, int]:
+    cart = data.get("cart")
+    if isinstance(cart, dict):
+        out: Dict[str, int] = {}
+        for k, v in cart.items():
+            try:
+                out[str(k)] = int(v)
+            except Exception:
+                continue
+        return out
+    return {}
+
+
+def _cart_total(cart: Dict[str, int]) -> int:
+    total = 0
+    for drink, qty in cart.items():
+        price = MENU.get(drink)
+        if price is None:
+            continue
+        total += price * int(qty)
+    return total
+
+
+def _cart_lines(cart: Dict[str, int]) -> list[str]:
+    lines: list[str] = []
+    for drink, qty in cart.items():
+        price = MENU.get(drink)
+        if price is None:
+            continue
+        sub = price * int(qty)
+        lines.append(f"• {html.quote(drink)} × {qty} = <b>{sub}₽</b>")
+    return lines
+
+
+def _cart_text(cart: Dict[str, int]) -> str:
+    if not cart:
+        return "🛒 <b>Корзина пустая</b>\n\nВыберите напиток кнопкой."
+    lines = _cart_lines(cart)
+    total = _cart_total(cart)
+    return "🛒 <b>Ваш заказ:</b>\n" + "\n".join(lines) + f"\n\n💰 Итого: <b>{total}₽</b>"
 
 
 # -------------------------
@@ -742,22 +809,22 @@ def build_admin_order_messages(
     order_num: str,
     user_id: int,
     user_name: str,
-    drink: str,
-    quantity: int,
+    cart: Dict[str, int],
     total: int,
     ready_in_min: int,
 ) -> tuple[str, str]:
     safe_user_name = html.quote(user_name)
-    safe_drink = html.quote(drink)
     user_link = f'<a href="tg://user?id={user_id}">{safe_user_name}</a>'
+
+    lines = _cart_lines(cart)
+    items_text = "\n".join(lines) if lines else "—"
 
     msg1 = (
         f"🔔 <b>НОВЫЙ ЗАКАЗ #{order_num}</b> | {html.quote(CAFE_NAME)}\n\n"
         f"{user_link}\n"
         f"<code>{user_id}</code>\n\n"
-        f"{safe_drink}\n"
-        f"{quantity} порций\n"
-        f"<b>{total} ₽</b>\n"
+        f"{items_text}\n\n"
+        f"💰 Итого: <b>{total} ₽</b>\n"
         f"{_format_ready_line(ready_in_min)}\n\n"
         "Нажми на имя, чтобы открыть чат и ответить клиенту."
     )
@@ -854,7 +921,7 @@ async def cmd_start(message: Message, state: FSMContext):
 
 
 # -------------------------
-# Общие кнопки (обработчики выше общего F.text)
+# Кнопки: общие
 # -------------------------
 
 @router.message(F.text == BTN_STATS)
@@ -884,7 +951,7 @@ async def call_phone(message: Message):
         text = (
             f"{name}, буду рад помочь!\n\n"
             f"📞 <b>Телефон {html.quote(CAFE_NAME)}:</b>\n<code>{html.quote(CAFE_PHONE)}</code>\n\n"
-            "Если удобнее — можешь просто выбрать напиток в меню, я всё оформлю здесь."
+            "Если удобнее — можешь собрать заказ в корзине прямо тут."
         )
         await message.answer(text, reply_markup=create_menu_keyboard())
     else:
@@ -914,10 +981,59 @@ async def show_hours(message: Message):
 
 
 # -------------------------
-# Заказ: FSM
+# Корзина: показать
 # -------------------------
 
-async def _start_order(message: Message, state: FSMContext, drink: str):
+async def _show_cart(message: Message, state: FSMContext):
+    data = await state.get_data()
+    cart = _get_cart(data)
+    await state.set_state(OrderStates.cart)
+    await state.update_data(cart=cart)  # нормализуем
+    await message.answer(_cart_text(cart), reply_markup=create_menu_keyboard(with_cart_actions=True))
+
+
+@router.message(F.text == BTN_CART)
+async def cart_button(message: Message, state: FSMContext):
+    await register_demo_subscriber(message.from_user.id)
+
+    if not is_cafe_open():
+        await message.answer(get_closed_message(), reply_markup=create_info_keyboard())
+        return
+
+    await _show_cart(message, state)
+
+
+@router.message(Command("cart"))
+async def cart_command(message: Message, state: FSMContext):
+    await register_demo_subscriber(message.from_user.id)
+
+    if not is_cafe_open():
+        await message.answer(get_closed_message(), reply_markup=create_info_keyboard())
+        return
+
+    await _show_cart(message, state)
+
+
+@router.message(F.text == BTN_CLEAR_CART)
+async def clear_cart(message: Message, state: FSMContext):
+    await register_demo_subscriber(message.from_user.id)
+    await state.set_state(OrderStates.cart)
+    await state.update_data(cart={})
+    await message.answer("🧹 Корзина очищена.", reply_markup=create_menu_keyboard(with_cart_actions=True))
+
+
+@router.message(F.text == BTN_CANCEL_ORDER)
+async def cancel_order(message: Message, state: FSMContext):
+    await register_demo_subscriber(message.from_user.id)
+    await state.clear()
+    await message.answer("❌ Заказ отменён.", reply_markup=create_menu_keyboard() if is_cafe_open() else create_info_keyboard())
+
+
+# -------------------------
+# Заказ: добавить позицию (выбор количества)
+# -------------------------
+
+async def _start_add_item(message: Message, state: FSMContext, drink: str):
     if not is_cafe_open():
         await message.answer(get_closed_message(), reply_markup=create_info_keyboard())
         return
@@ -927,13 +1043,17 @@ async def _start_order(message: Message, state: FSMContext, drink: str):
         await message.answer("Этого напитка уже нет в меню. Нажмите /start.", reply_markup=create_menu_keyboard())
         return
 
+    data = await state.get_data()
+    cart = _get_cart(data)
+
     await state.set_state(OrderStates.waiting_for_quantity)
-    await state.set_data({"drink": drink, "price": price})
+    await state.update_data(current_drink=drink, current_price=price, cart=cart)
 
     choice_text = random.choice(CHOICE_VARIANTS).format(name=get_user_name(message))
     await message.answer(
         f"{choice_text}\n\n"
-        f"🥤 <b>{html.quote(drink)}</b>\n💰 <b>{price} ₽</b>\n\n📝 <b>Сколько порций?</b>",
+        f"🥤 <b>{html.quote(drink)}</b>\n💰 <b>{price} ₽</b>\n\n"
+        "📝 <b>Сколько порций добавить в корзину?</b>",
         reply_markup=create_quantity_keyboard(),
     )
 
@@ -943,26 +1063,39 @@ async def process_quantity(message: Message, state: FSMContext):
     await register_demo_subscriber(message.from_user.id)
 
     if message.text == BTN_CANCEL:
-        await state.clear()
-        await message.answer(
-            "❌ Заказ отменён",
-            reply_markup=create_menu_keyboard() if is_cafe_open() else create_info_keyboard(),
-        )
+        # возврат в корзину (если есть) или просто в меню
+        data = await state.get_data()
+        cart = _get_cart(data)
+        if cart:
+            await state.set_state(OrderStates.cart)
+            await message.answer("Ок, вернул в корзину.", reply_markup=create_menu_keyboard(with_cart_actions=True))
+            await message.answer(_cart_text(cart), reply_markup=create_menu_keyboard(with_cart_actions=True))
+        else:
+            await state.clear()
+            await message.answer("Ок.", reply_markup=create_menu_keyboard())
         return
 
     try:
         quantity = int((message.text or "")[0])
         if 1 <= quantity <= 5:
             data = await state.get_data()
-            drink, price = data["drink"], data["price"]
-            total = price * quantity
+            drink = str(data.get("current_drink") or "")
+            price = int(data.get("current_price") or 0)
+            cart = _get_cart(data)
 
-            await state.set_state(OrderStates.waiting_for_confirmation)
-            await state.update_data(quantity=quantity, total=total)
+            if not drink or price <= 0:
+                await state.clear()
+                await message.answer("Ошибка состояния. Нажмите /start.", reply_markup=create_menu_keyboard())
+                return
 
+            cart[drink] = int(cart.get(drink, 0)) + quantity
+            await state.set_state(OrderStates.cart)
+            await state.update_data(cart=cart)
+
+            sub = price * quantity
             await message.answer(
-                f"🥤 <b>{html.quote(drink)}</b> × {quantity}\n💰 Итого: <b>{total} ₽</b>\n\n✅ Правильно?",
-                reply_markup=create_confirm_keyboard(),
+                f"✅ Добавил в корзину: <b>{html.quote(drink)}</b> × {quantity} (= {sub}₽)\n\n{_cart_text(cart)}",
+                reply_markup=create_menu_keyboard(with_cart_actions=True),
             )
         else:
             await message.answer("❌ Выберите от 1 до 5", reply_markup=create_quantity_keyboard())
@@ -970,17 +1103,46 @@ async def process_quantity(message: Message, state: FSMContext):
         await message.answer("❌ Нажмите на кнопку", reply_markup=create_quantity_keyboard())
 
 
-@router.message(StateFilter(OrderStates.waiting_for_confirmation))
-async def process_confirmation(message: Message, state: FSMContext):
+# -------------------------
+# Корзина: оформить -> подтвердить -> время
+# -------------------------
+
+@router.message(F.text == BTN_CHECKOUT)
+async def checkout(message: Message, state: FSMContext):
     await register_demo_subscriber(message.from_user.id)
 
-    if message.text == BTN_MENU:
+    if not is_cafe_open():
+        await message.answer(get_closed_message(), reply_markup=create_info_keyboard())
+        return
+
+    data = await state.get_data()
+    cart = _get_cart(data)
+    if not cart:
+        await message.answer("Корзина пустая — добавьте хотя бы одну позицию.", reply_markup=create_menu_keyboard())
+        return
+
+    await state.set_state(OrderStates.waiting_for_confirmation)
+    await message.answer(
+        "✅ <b>Подтвердите заказ</b>\n\n" + _cart_text(cart),
+        reply_markup=create_confirm_keyboard_for_cart(),
+    )
+
+
+@router.message(StateFilter(OrderStates.waiting_for_confirmation))
+async def process_cart_confirmation(message: Message, state: FSMContext):
+    await register_demo_subscriber(message.from_user.id)
+
+    if message.text == BTN_CART:
+        await _show_cart(message, state)
+        return
+
+    if message.text == BTN_CANCEL_ORDER:
         await state.clear()
-        await message.answer("☕ Меню:", reply_markup=create_menu_keyboard())
+        await message.answer("❌ Заказ отменён.", reply_markup=create_menu_keyboard())
         return
 
     if message.text != BTN_CONFIRM:
-        await message.answer("❌ Нажмите кнопку", reply_markup=create_confirm_keyboard())
+        await message.answer("Нажмите «Подтвердить» или вернитесь в корзину.", reply_markup=create_confirm_keyboard_for_cart())
         return
 
     await state.set_state(OrderStates.waiting_for_ready_time)
@@ -992,6 +1154,13 @@ async def process_confirmation(message: Message, state: FSMContext):
 
 async def _finalize_order(message: Message, state: FSMContext, ready_in_min: int):
     user_id = message.from_user.id
+
+    data = await state.get_data()
+    cart = _get_cart(data)
+    if not cart:
+        await state.clear()
+        await message.answer("Корзина пустая. Нажмите /start.", reply_markup=create_menu_keyboard())
+        return
 
     # rate-limit после финализации
     try:
@@ -1010,8 +1179,7 @@ async def _finalize_order(message: Message, state: FSMContext, ready_in_min: int
     except Exception:
         pass
 
-    data = await state.get_data()
-    drink, quantity, total = data["drink"], data["quantity"], data["total"]
+    total = _cart_total(cart)
 
     order_id = f"order:{int(time.time())}:{user_id}"
     order_num = order_id.split(":")[-1]
@@ -1020,16 +1188,16 @@ async def _finalize_order(message: Message, state: FSMContext, ready_in_min: int
     ready_at_dt = get_moscow_time() + timedelta(minutes=max(0, ready_in_min))
     ready_at_str = ready_at_dt.strftime("%H:%M")
 
-    # сохраняем заказ + статистику
+    # сохраняем заказ + статистику (по каждой позиции)
     try:
         r_client = await get_redis_client()
+
         await r_client.hset(
             order_id,
             mapping={
                 "user_id": user_id,
                 "username": user_name,
-                "drink": drink,
-                "quantity": quantity,
+                "cart_json": json.dumps(cart, ensure_ascii=False),
                 "total": total,
                 "ready_in_min": ready_in_min,
                 "ready_at_msk": ready_at_str,
@@ -1037,19 +1205,25 @@ async def _finalize_order(message: Message, state: FSMContext, ready_in_min: int
             },
         )
         await r_client.expire(order_id, 86400)
+
         await r_client.incr("stats:total_orders")
-        await r_client.incr(f"stats:drink:{drink}")
+        for drink, qty in cart.items():
+            try:
+                await r_client.incrby(f"stats:drink:{drink}", int(qty))
+            except Exception:
+                continue
+
         await r_client.aclose()
     except Exception:
         pass
 
-    # сохраняем профиль клиента для "умного возврата"
+    # профиль клиента для "умного возврата"
     try:
         await customer_mark_order(
             user_id=user_id,
             first_name=message.from_user.first_name or "",
             username=message.from_user.username or "",
-            drink=drink,
+            cart=cart,
             total_sum=int(total),
         )
     except Exception:
@@ -1060,8 +1234,7 @@ async def _finalize_order(message: Message, state: FSMContext, ready_in_min: int
         order_num=order_num,
         user_id=user_id,
         user_name=user_name,
-        drink=drink,
-        quantity=quantity,
+        cart=cart,
         total=total,
         ready_in_min=ready_in_min,
     )
@@ -1074,10 +1247,13 @@ async def _finalize_order(message: Message, state: FSMContext, ready_in_min: int
     else:
         ready_user_line = f"⏱ Готовность: через {ready_in_min} мин (к {ready_at_str} МСК)"
 
+    lines = _cart_lines(cart)
+    items = "\n".join(lines) if lines else "—"
+
     await message.answer(
         f"🎉 <b>Заказ #{order_num} принят!</b>\n\n"
-        f"🥤 {html.quote(drink)} × {quantity}\n"
-        f"💰 {total}₽\n"
+        f"{items}\n\n"
+        f"💰 Итого: <b>{total}₽</b>\n"
         f"{ready_user_line}\n\n"
         f"{finish_text}",
         reply_markup=create_menu_keyboard(),
@@ -1090,8 +1266,9 @@ async def process_ready_time(message: Message, state: FSMContext):
     await register_demo_subscriber(message.from_user.id)
 
     if message.text == BTN_CANCEL:
-        await state.clear()
-        await message.answer("Ок, заказ отменён.", reply_markup=create_menu_keyboard())
+        # мягкая отмена шага выбора времени: вернём в корзину
+        await message.answer("Ок, вернул в корзину.", reply_markup=create_menu_keyboard(with_cart_actions=True))
+        await _show_cart(message, state)
         return
 
     if message.text == BTN_READY_NOW:
@@ -1451,44 +1628,37 @@ async def menu_edit_remove(message: Message, state: FSMContext):
 
 
 # -------------------------
-# Общий обработчик текста (выбор напитка)
+# Главный обработчик текста: выбор напитка (работает и в корзине)
 # -------------------------
 
-@router.message(StateFilter(None), F.text)
-async def any_text_outside_states(message: Message, state: FSMContext):
+@router.message(F.text)
+async def any_text(message: Message, state: FSMContext):
     await register_demo_subscriber(message.from_user.id)
     text = (message.text or "").strip()
 
-    if text in MENU:
-        await _start_order(message, state, text)
+    # напиток -> добавление в корзину (в любом состоянии, кроме тех, где ждём конкретный ввод)
+    current_state = await state.get_state()
+    blocked_states = {
+        BookingStates.waiting_for_datetime.state,
+        BookingStates.waiting_for_people.state,
+        BookingStates.waiting_for_comment.state,
+        MenuEditStates.waiting_for_action.state,
+        MenuEditStates.waiting_for_add_name.state,
+        MenuEditStates.waiting_for_add_price.state,
+        MenuEditStates.waiting_for_edit_name.state,
+        MenuEditStates.waiting_for_edit_price.state,
+        MenuEditStates.waiting_for_remove_name.state,
+    }
+    if text in MENU and current_state not in blocked_states:
+        await _start_add_item(message, state, text)
         return
 
+    # если это сервисная кнопка — у неё есть отдельные хендлеры
     if _is_reserved_button(text):
         return
 
-    await message.answer("Выбери напиток кнопкой в меню или нажми «Бронирование».", reply_markup=create_menu_keyboard())
-
-
-# -------------------------
-# Help
-# -------------------------
-
-@router.message(Command("help"))
-async def help_command(message: Message):
-    await register_demo_subscriber(message.from_user.id)
-    text = (
-        "Этот бот — демо-ассистент для кофейни.\n\n"
-        "Что он умеет:\n"
-        "• Меню и быстрые заказы\n"
-        "• Время готовности (сейчас / через 20 минут)\n"
-        "• Заявки на бронирование\n"
-        "• Умный возврат гостей (персонально, не чаще 1 раза в 30 дней)\n\n"
-        "Команды:\n"
-        "• /offers_off — отключить персональные предложения\n"
-        "• /offers_on — включить обратно\n\n"
-        "Связаться: @denvyd"
-    )
-    await message.answer(text, reply_markup=create_menu_keyboard())
+    # подсказка
+    await message.answer("Выбери напиток кнопкой в меню или открой «🛒 Корзина».", reply_markup=create_menu_keyboard())
 
 
 # -------------------------
@@ -1501,7 +1671,7 @@ _smart_return_task: Optional[asyncio.Task] = None
 async def on_startup(bot: Bot) -> None:
     global _smart_return_task
 
-    logger.info("🚀 Запуск бота (START v1.0 DEMO)...")
+    logger.info("🚀 Запуск бота (START v1.1 DEMO)...")
     logger.info(f"☕ Кафе: {CAFE_NAME}")
     logger.info(f"📍 Адрес: {CAFE_ADDRESS}")
     logger.info(f"⏰ Часы работы: {WORK_START}:00–{WORK_END}:00 (МСК)")
