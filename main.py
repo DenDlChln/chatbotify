@@ -21,10 +21,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 MSK_TZ = timezone(timedelta(hours=3))
@@ -33,12 +30,18 @@ RATE_LIMIT_SECONDS = 60
 DEMO_MODE = True
 DEMO_SUBSCRIBERS_KEY = "demo:subscribers"
 
-MENU_REDIS_KEY = "menu:items"  # hash: {drink_name: price}
+MENU_REDIS_KEY = "menu:items"  # hash: {name: price}
 
-# ---------- Smart return ----------
+# stats
+STATS_TOTAL_ORDERS = "stats:total_orders"
+STATS_TOTAL_REVENUE = "stats:total_revenue"
+STATS_DRINK_PREFIX = "stats:drink:"
+STATS_DRINK_REV_PREFIX = "stats:drink_revenue:"
+
+# smart return
 CUSTOMERS_SET_KEY = "customers:set"
-CUSTOMER_KEY_PREFIX = "customer:"             # hash customer:{user_id}
-CUSTOMER_DRINKS_PREFIX = "customer:drinks:"   # hash customer:drinks:{user_id}
+CUSTOMER_KEY_PREFIX = "customer:"
+CUSTOMER_DRINKS_PREFIX = "customer:drinks:"
 
 DEFAULT_RETURN_CYCLE_DAYS = 7
 RETURN_COOLDOWN_DAYS = 30
@@ -55,10 +58,9 @@ def get_moscow_time() -> datetime:
 def _parse_work_hours(obj: Any) -> Optional[Tuple[int, int]]:
     try:
         if isinstance(obj, list) and len(obj) == 2:
-            start = int(obj[0])
-            end = int(obj[1])
-            if 0 <= start <= 23 and 0 <= end <= 23 and start != end:
-                return start, end
+            s, e = int(obj[0]), int(obj[1])
+            if 0 <= s <= 23 and 0 <= e <= 23 and s != e:
+                return s, e
     except Exception:
         return None
     return None
@@ -87,14 +89,12 @@ def load_config() -> Dict[str, Any]:
             cafe = data.get("cafe", {})
 
             default_config.update(
-                {
-                    "name": cafe.get("name", default_config["name"]),
-                    "phone": cafe.get("phone", default_config["phone"]),
-                    "admin_chat_id": cafe.get("admin_chat_id", default_config["admin_chat_id"]),
-                    "address": cafe.get("address", default_config["address"]),
-                    "menu": cafe.get("menu", default_config["menu"]),
-                    "return_cycle_days": int(cafe.get("return_cycle_days", default_config["return_cycle_days"])),
-                }
+                name=cafe.get("name", default_config["name"]),
+                phone=cafe.get("phone", default_config["phone"]),
+                admin_chat_id=cafe.get("admin_chat_id", default_config["admin_chat_id"]),
+                address=cafe.get("address", default_config["address"]),
+                menu=cafe.get("menu", default_config["menu"]),
+                return_cycle_days=int(cafe.get("return_cycle_days", default_config["return_cycle_days"])),
             )
 
             wh = _parse_work_hours(cafe.get("work_hours"))
@@ -102,12 +102,8 @@ def load_config() -> Dict[str, Any]:
                 default_config["work_start"], default_config["work_end"] = wh
             else:
                 try:
-                    ws = cafe.get("work_start", default_config["work_start"])
-                    we = cafe.get("work_end", default_config["work_end"])
-                    ws_i, we_i = int(ws), int(we)
-                    if 0 <= ws_i <= 23 and 0 <= we_i <= 23 and ws_i != we_i:
-                        default_config["work_start"] = ws_i
-                        default_config["work_end"] = we_i
+                    default_config["work_start"] = int(cafe.get("work_start", default_config["work_start"]))
+                    default_config["work_end"] = int(cafe.get("work_end", default_config["work_end"]))
                 except Exception:
                     pass
     except Exception:
@@ -147,7 +143,19 @@ WEBHOOK_URL = f"https://{HOSTNAME}{WEBHOOK_PATH}"
 router = Router()
 
 
-# ---------- States ----------
+# ---------------- Redis ----------------
+async def get_redis_client():
+    # decode_responses=True -> str вместо bytes (полезно для сравнения ключей меню). [web:243]
+    client = redis.from_url(REDIS_URL, decode_responses=True)
+    await client.ping()
+    return client
+
+
+def _rate_limit_key(user_id: int) -> str:
+    return f"rate_limit:{user_id}"
+
+
+# ---------------- States ----------------
 class OrderStates(StatesGroup):
     waiting_for_quantity = State()
     cart_view = State()
@@ -167,36 +175,20 @@ class MenuEditStates(StatesGroup):
     waiting_for_action = State()
     waiting_for_add_name = State()
     waiting_for_add_price = State()
-    waiting_for_edit_name = State()
+    pick_edit_item = State()
     waiting_for_edit_price = State()
-    waiting_for_remove_name = State()
+    pick_remove_item = State()
 
 
-# ---------- Redis helper ----------
-async def get_redis_client():
-    client = redis.from_url(REDIS_URL)
-    try:
-        await client.ping()
-        return client
-    except Exception:
-        await client.aclose()
-        raise
-
-
-def _rate_limit_key(user_id: int) -> str:
-    return f"rate_limit:{user_id}"
-
-
-# ---------- Working hours ----------
+# ---------------- Time/status ----------------
 def is_cafe_open() -> bool:
     return WORK_START <= get_moscow_time().hour < WORK_END
 
 
 def get_work_status() -> str:
-    msk_hour = get_moscow_time().hour
+    h = get_moscow_time().hour
     if is_cafe_open():
-        remaining = max(0, WORK_END - msk_hour)
-        return f"🟢 <b>Открыто</b> (ещё {remaining} ч.)"
+        return f"🟢 <b>Открыто</b> (до {WORK_END}:00 МСК)"
     return f"🔴 <b>Закрыто</b>\n🕐 Открываемся: {WORK_START}:00 (МСК)"
 
 
@@ -204,7 +196,21 @@ def _address_line() -> str:
     return f"\n📍 <b>Адрес:</b> {html.quote(CAFE_ADDRESS)}" if CAFE_ADDRESS else ""
 
 
-# ---------- DEMO subscribers ----------
+def get_closed_message() -> str:
+    menu_text = " • ".join([f"<b>{html.quote(d)}</b> {p}₽" for d, p in MENU.items()])
+    return (
+        f"🔒 <b>{html.quote(CAFE_NAME)} сейчас закрыто!</b>\n\n"
+        f"⏰ {get_work_status()}{_address_line()}\n\n"
+        f"☕ <b>Меню:</b>\n{menu_text}\n\n"
+        f"📞 <b>Телефон:</b> <code>{html.quote(CAFE_PHONE)}</code>"
+    )
+
+
+def get_user_name(message: Message) -> str:
+    return (message.from_user.first_name if message.from_user else None) or "друг"
+
+
+# ---------------- DEMO audience ----------------
 async def register_demo_subscriber(user_id: int):
     if not DEMO_MODE:
         return
@@ -249,7 +255,7 @@ async def send_to_demo_audience(bot: Bot, text: str, include_admin: bool = True)
                 pass
 
 
-# ---------- Menu sync ----------
+# ---------------- Menu sync ----------------
 async def sync_menu_from_redis():
     global MENU
     try:
@@ -259,19 +265,17 @@ async def sync_menu_from_redis():
             new_menu: Dict[str, int] = {}
             for k, v in data.items():
                 try:
-                    drink = k.decode("utf-8") if isinstance(k, (bytes, bytearray)) else str(k)
-                    price_str = v.decode("utf-8") if isinstance(v, (bytes, bytearray)) else str(v)
-                    new_menu[drink] = int(price_str)
+                    new_menu[str(k)] = int(v)
                 except Exception:
                     continue
             if new_menu:
-                MENU = dict(new_menu)
+                MENU = new_menu
         else:
             if MENU:
                 await r.hset(MENU_REDIS_KEY, mapping={k: str(v) for k, v in MENU.items()})
         await r.aclose()
     except Exception as e:
-        logger.error(f"❌ sync_menu_from_redis error: {e}")
+        logger.error(f"sync_menu_from_redis: {e}")
 
 
 async def menu_set_item(drink: str, price: int):
@@ -296,7 +300,56 @@ async def menu_delete_item(drink: str):
         pass
 
 
-# ---------- Smart return (minimal) ----------
+# ---------------- Cart helpers ----------------
+def _get_cart(data: Dict[str, Any]) -> Dict[str, int]:
+    cart = data.get("cart")
+    if isinstance(cart, dict):
+        out: Dict[str, int] = {}
+        for k, v in cart.items():
+            try:
+                out[str(k)] = int(v)
+            except Exception:
+                continue
+        return out
+    return {}
+
+
+def _cart_total(cart: Dict[str, int]) -> int:
+    return sum(int(MENU.get(d, 0)) * int(q) for d, q in cart.items())
+
+
+def _cart_lines(cart: Dict[str, int]) -> list[str]:
+    lines = []
+    for d, q in cart.items():
+        p = int(MENU.get(d, 0))
+        lines.append(f"• {html.quote(d)} × {q} = <b>{p * int(q)}₽</b>")
+    return lines
+
+
+def _cart_text(cart: Dict[str, int]) -> str:
+    if not cart:
+        return "🛒 <b>Корзина пустая</b>\n\nЧтобы добавить: нажмите напиток → выберите количество."
+    return "🛒 <b>Ваш заказ:</b>\n" + "\n".join(_cart_lines(cart)) + f"\n\n💰 Итого: <b>{_cart_total(cart)}₽</b>"
+
+
+async def _show_cart(message: Message, state: FSMContext):
+    data = await state.get_data()
+    cart = _get_cart(data)
+    await state.set_state(OrderStates.cart_view)
+    await state.update_data(cart=cart)
+    await message.answer(_cart_text(cart), reply_markup=create_cart_keyboard(bool(cart)))
+
+
+# ---------------- Smart return (loop) ----------------
+def _in_send_window_msk() -> bool:
+    h = get_moscow_time().hour
+    return RETURN_SEND_FROM_HOUR <= h < RETURN_SEND_TO_HOUR
+
+
+def _promo_code(user_id: int) -> str:
+    return f"CB{user_id % 10000:04d}{int(time.time()) % 10000:04d}"
+
+
 async def customer_mark_order(*, user_id: int, first_name: str, username: str, cart: Dict[str, int], total_sum: int):
     now_ts = int(time.time())
     customer_key = f"{CUSTOMER_KEY_PREFIX}{user_id}"
@@ -331,17 +384,6 @@ async def customer_mark_order(*, user_id: int, first_name: str, username: str, c
         pass
 
 
-async def customer_set_offers_opt(user_id: int, opt_out: bool):
-    customer_key = f"{CUSTOMER_KEY_PREFIX}{user_id}"
-    try:
-        r = await get_redis_client()
-        await r.hset(customer_key, "offers_opt_out", 1 if opt_out else 0)
-        await r.sadd(CUSTOMERS_SET_KEY, user_id)
-        await r.aclose()
-    except Exception:
-        pass
-
-
 async def _get_favorite_drink(user_id: int) -> str:
     drinks_key = f"{CUSTOMER_DRINKS_PREFIX}{user_id}"
     try:
@@ -350,15 +392,13 @@ async def _get_favorite_drink(user_id: int) -> str:
         await r.aclose()
         if not data:
             return ""
-        best_name = ""
-        best_cnt = -1
+        best_name, best_cnt = "", -1
         for k, v in data.items():
             try:
-                name = k.decode("utf-8") if isinstance(k, (bytes, bytearray)) else str(k)
-                cnt = int(v.decode("utf-8")) if isinstance(v, (bytes, bytearray)) else int(v)
+                cnt = int(v)
                 if cnt > best_cnt:
                     best_cnt = cnt
-                    best_name = name
+                    best_name = str(k)
             except Exception:
                 continue
         return best_name
@@ -366,34 +406,20 @@ async def _get_favorite_drink(user_id: int) -> str:
         return ""
 
 
-def _in_send_window_msk() -> bool:
-    h = get_moscow_time().hour
-    return RETURN_SEND_FROM_HOUR <= h < RETURN_SEND_TO_HOUR
-
-
-def _promo_code(user_id: int) -> str:
-    return f"CB{user_id % 10000:04d}{int(time.time()) % 10000:04d}"
-
-
 async def smart_return_check_and_send(bot: Bot):
     if not _in_send_window_msk():
         return
-
     now_ts = int(time.time())
 
     try:
         r = await get_redis_client()
         ids = await r.smembers(CUSTOMERS_SET_KEY)
         await r.aclose()
+        ids = [int(x) for x in ids]
     except Exception:
         ids = []
 
-    for raw_id in ids:
-        try:
-            user_id = int(raw_id)
-        except Exception:
-            continue
-
+    for user_id in ids:
         customer_key = f"{CUSTOMER_KEY_PREFIX}{user_id}"
         try:
             r = await get_redis_client()
@@ -402,25 +428,11 @@ async def smart_return_check_and_send(bot: Bot):
         except Exception:
             profile = {}
 
-        if not profile:
+        if not profile or str(profile.get("offers_opt_out", "0")) == "1":
             continue
 
-        def _get(field: str) -> str:
-            v = profile.get(field.encode("utf-8"), profile.get(field))
-            if v is None:
-                return ""
-            if isinstance(v, (bytes, bytearray)):
-                return v.decode("utf-8", errors="ignore")
-            return str(v)
-
-        if _get("offers_opt_out") == "1":
-            continue
-
-        last_order_ts_str = _get("last_order_ts")
-        if not last_order_ts_str:
-            continue
         try:
-            last_order_ts = int(float(last_order_ts_str))
+            last_order_ts = int(float(profile.get("last_order_ts", "0") or 0))
         except Exception:
             continue
 
@@ -428,27 +440,24 @@ async def smart_return_check_and_send(bot: Bot):
         if days_since < RETURN_CYCLE_DAYS:
             continue
 
-        last_trigger_ts_str = _get("last_trigger_ts")
         try:
-            last_trigger_ts = int(float(last_trigger_ts_str)) if last_trigger_ts_str else 0
+            last_trigger_ts = int(float(profile.get("last_trigger_ts", "0") or 0))
         except Exception:
             last_trigger_ts = 0
 
         if last_trigger_ts and (now_ts - last_trigger_ts) < (RETURN_COOLDOWN_DAYS * 86400):
             continue
 
-        first_name = _get("first_name") or "друг"
-        favorite = await _get_favorite_drink(user_id)
-        if not favorite:
-            favorite = _get("last_drink") or "напиток"
-
+        first_name = profile.get("first_name") or "друг"
+        favorite = await _get_favorite_drink(user_id) or profile.get("last_drink") or "напиток"
         promo = _promo_code(user_id)
+
         text = (
-            f"{html.quote(first_name)}, давно не виделись ☕\n\n"
-            f"Ваш любимый <b>{html.quote(favorite)}</b> сегодня со скидкой <b>{RETURN_DISCOUNT_PERCENT}%</b>.\n"
+            f"{html.quote(str(first_name))}, давно не виделись ☕\n\n"
+            f"Ваш любимый <b>{html.quote(str(favorite))}</b> сегодня со скидкой <b>{RETURN_DISCOUNT_PERCENT}%</b>.\n"
             f"Промокод: <code>{promo}</code>\n\n"
-            "Сделаем заказ? Нажмите /start.\n\n"
-            "Отключить: /offers_off"
+            "Сделаем заказ? Нажмите /start.\n"
+            "Отключить предложения: /offers_off"
         )
 
         try:
@@ -473,11 +482,11 @@ async def smart_return_loop(bot: Bot):
         try:
             await smart_return_check_and_send(bot)
         except Exception as e:
-            logger.error(f"❌ smart_return_loop error: {e}")
+            logger.error(f"smart_return_loop: {e}")
         await asyncio.sleep(RETURN_CHECK_EVERY_SECONDS)
 
 
-# ---------- Buttons ----------
+# ---------------- Buttons ----------------
 BTN_CALL = "📞 Позвонить"
 BTN_HOURS = "⏰ Часы работы"
 BTN_STATS = "📊 Статистика"
@@ -492,10 +501,7 @@ BTN_EDIT_CART = "✏️ Изменить"
 
 BTN_CANCEL = "🔙 Отмена"
 BTN_BACK = "⬅️ Назад"
-
 BTN_CONFIRM = "Подтвердить"
-BTN_MENU = "Меню"
-
 BTN_READY_NOW = "🚶 Сейчас"
 BTN_READY_20 = "⏱ Через 20 мин"
 
@@ -509,15 +515,16 @@ MENU_EDIT_EDIT = "✏️ Изменить цену"
 MENU_EDIT_DEL = "🗑 Удалить позицию"
 
 
-# ---------- Keyboards ----------
+# ---------------- Keyboards ----------------
 def create_main_keyboard() -> ReplyKeyboardMarkup:
+    # Главное меню всегда persistent, чтобы iOS не “терял” клавиатуру. [web:60]
     kb: list[list[KeyboardButton]] = []
     for drink in MENU.keys():
         kb.append([KeyboardButton(text=drink)])
     kb.append([KeyboardButton(text=BTN_CART), KeyboardButton(text=BTN_CHECKOUT), KeyboardButton(text=BTN_BOOKING)])
     kb.append([KeyboardButton(text=BTN_STATS), KeyboardButton(text=BTN_CALL), KeyboardButton(text=BTN_HOURS)])
     kb.append([KeyboardButton(text=BTN_MENU_EDIT)])
-    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True, is_persistent=True)  # [web:60]
+    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True, is_persistent=True)
 
 
 def create_cart_keyboard(cart_has_items: bool) -> ReplyKeyboardMarkup:
@@ -531,7 +538,7 @@ def create_cart_keyboard(cart_has_items: bool) -> ReplyKeyboardMarkup:
         kb.append([KeyboardButton(text=drink)])
     kb.append([KeyboardButton(text=BTN_BOOKING), KeyboardButton(text=BTN_STATS)])
     kb.append([KeyboardButton(text=BTN_CALL), KeyboardButton(text=BTN_HOURS), KeyboardButton(text=BTN_MENU_EDIT)])
-    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True, is_persistent=True)  # [web:60]
+    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True, is_persistent=True)
 
 
 def create_quantity_keyboard() -> ReplyKeyboardMarkup:
@@ -541,7 +548,7 @@ def create_quantity_keyboard() -> ReplyKeyboardMarkup:
             [KeyboardButton(text="4️⃣"), KeyboardButton(text="5️⃣"), KeyboardButton(text=BTN_CANCEL)],
         ],
         resize_keyboard=True,
-        one_time_keyboard=True,  # [web:60]
+        one_time_keyboard=True,
     )
 
 
@@ -552,7 +559,7 @@ def create_confirm_keyboard() -> ReplyKeyboardMarkup:
             [KeyboardButton(text=BTN_CANCEL_ORDER)],
         ],
         resize_keyboard=True,
-        one_time_keyboard=True,  # [web:60]
+        one_time_keyboard=True,
     )
 
 
@@ -563,16 +570,14 @@ def create_ready_time_keyboard() -> ReplyKeyboardMarkup:
             [KeyboardButton(text=BTN_CANCEL)],
         ],
         resize_keyboard=True,
-        one_time_keyboard=True,  # [web:60]
+        one_time_keyboard=True,
     )
 
 
 def create_cart_pick_item_keyboard(cart: Dict[str, int]) -> ReplyKeyboardMarkup:
-    rows: list[list[KeyboardButton]] = []
-    for drink in cart.keys():
-        rows.append([KeyboardButton(text=drink)])
+    rows: list[list[KeyboardButton]] = [[KeyboardButton(text=k)] for k in cart.keys()]
     rows.append([KeyboardButton(text=BTN_CANCEL), KeyboardButton(text=BTN_CART)])
-    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)  # [web:60]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
 
 
 def create_cart_edit_actions_keyboard() -> ReplyKeyboardMarkup:
@@ -583,26 +588,15 @@ def create_cart_edit_actions_keyboard() -> ReplyKeyboardMarkup:
             [KeyboardButton(text=BTN_CANCEL)],
         ],
         resize_keyboard=True,
-        one_time_keyboard=True,  # [web:60]
-    )
-
-
-def create_info_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text=BTN_CART), KeyboardButton(text=BTN_BOOKING), KeyboardButton(text=BTN_STATS)],
-            [KeyboardButton(text=BTN_CALL), KeyboardButton(text=BTN_HOURS), KeyboardButton(text=BTN_MENU_EDIT)],
-        ],
-        resize_keyboard=True,
-        is_persistent=True,  # [web:60]
+        one_time_keyboard=True,
     )
 
 
 def create_booking_cancel_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text=BTN_CANCEL), KeyboardButton(text=BTN_MENU)]],
+        keyboard=[[KeyboardButton(text=BTN_CANCEL)]],
         resize_keyboard=True,
-        one_time_keyboard=True,  # [web:60]
+        one_time_keyboard=True,
     )
 
 
@@ -614,7 +608,7 @@ def create_booking_people_keyboard() -> ReplyKeyboardMarkup:
             [KeyboardButton(text="9"), KeyboardButton(text="10"), KeyboardButton(text=BTN_CANCEL)],
         ],
         resize_keyboard=True,
-        one_time_keyboard=True,  # [web:60]
+        one_time_keyboard=True,
     )
 
 
@@ -625,189 +619,94 @@ def create_menu_edit_keyboard() -> ReplyKeyboardMarkup:
             [KeyboardButton(text=MENU_EDIT_DEL), KeyboardButton(text=BTN_BACK)],
         ],
         resize_keyboard=True,
-        one_time_keyboard=True,  # [web:60]
+        one_time_keyboard=True,
     )
 
 
 def create_menu_edit_cancel_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=BTN_BACK)]], resize_keyboard=True, one_time_keyboard=True)  # [web:60]
+    return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=BTN_BACK)]], resize_keyboard=True, one_time_keyboard=True)
 
 
-# ---------- Text helpers ----------
+def create_pick_menu_item_keyboard() -> ReplyKeyboardMarkup:
+    rows = [[KeyboardButton(text=k)] for k in MENU.keys()]
+    rows.append([KeyboardButton(text=BTN_BACK)])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
+
+
+# ---------------- Messages ----------------
 WELCOME_VARIANTS = [
     "Рад тебя видеть, {name}! Сегодня что-то классическое или попробуем новинку?",
     "{name}, добро пожаловать! Я уже грею молоко — выбирай, что приготовить.",
     "Заходи, {name}! Сейчас самое время для вкусного перерыва.",
-    "{name}, привет! Устроим небольшой кофейный ритуал?",
-    "Отлично, что заглянул, {name}! Давай подберём идеальный напиток под настроение.",
 ]
 
 CHOICE_VARIANTS = [
-    "Отличный выбор! Такое сейчас особенно популярно.",
+    "Отличный выбор!",
     "Классика, которая никогда не подводит.",
-    "Мне тоже нравится этот вариант — не прогадаешь.",
-    "Прекрасный вкус! Это один из хитов нашего меню.",
     "Звучит вкусно — уже представляю аромат.",
 ]
 
 FINISH_VARIANTS = [
-    "Спасибо за заказ, {name}! Буду рад увидеть тебя снова.",
-    "Рад был помочь с выбором, {name}. Заглядывай ещё — всегда ждём.",
-    "Заказ готовим с заботой. Возвращайся, когда захочется повторить.",
+    "Спасибо за заказ, {name}! Заглядывай ещё.",
+    "Заказ готовим с заботой. Возвращайся!",
 ]
 
 
-def get_user_name(message: Message) -> str:
-    if message.from_user is None:
-        return "друг"
-    return message.from_user.first_name or "друг"
-
-
-def get_closed_message() -> str:
-    menu_text = " • ".join([f"<b>{html.quote(drink)}</b> {price}₽" for drink, price in MENU.items()])
-    return (
-        f"🔒 <b>{html.quote(CAFE_NAME)} сейчас закрыто!</b>\n\n"
-        f"⏰ {get_work_status()}{_address_line()}\n\n"
-        f"☕ <b>Наше меню:</b>\n{menu_text}\n\n"
-        f"📞 <b>Связаться:</b>\n<code>{html.quote(CAFE_PHONE)}</code>"
-    )
-
-
-def _is_reserved_button(text: str) -> bool:
-    reserved = {
-        BTN_CALL, BTN_HOURS, BTN_STATS, BTN_BOOKING, BTN_MENU_EDIT,
-        BTN_CART, BTN_CHECKOUT, BTN_CLEAR_CART, BTN_CANCEL_ORDER, BTN_EDIT_CART,
-        BTN_CANCEL, BTN_BACK, BTN_CONFIRM, BTN_MENU,
-        BTN_READY_NOW, BTN_READY_20,
-        CART_ACT_PLUS, CART_ACT_MINUS, CART_ACT_DEL, CART_ACT_DONE,
-        MENU_EDIT_ADD, MENU_EDIT_EDIT, MENU_EDIT_DEL,
-    }
-    return text in reserved
-
-
-# ---------- Cart helpers ----------
-def _get_cart(data: Dict[str, Any]) -> Dict[str, int]:
-    cart = data.get("cart")
-    if isinstance(cart, dict):
-        out: Dict[str, int] = {}
-        for k, v in cart.items():
-            try:
-                out[str(k)] = int(v)
-            except Exception:
-                continue
-        return out
-    return {}
-
-
-def _cart_total(cart: Dict[str, int]) -> int:
-    total = 0
-    for drink, qty in cart.items():
-        price = MENU.get(drink)
-        if price is None:
-            continue
-        total += price * int(qty)
-    return total
-
-
-def _cart_lines(cart: Dict[str, int]) -> list[str]:
-    lines: list[str] = []
-    for drink, qty in cart.items():
-        price = MENU.get(drink)
-        if price is None:
-            continue
-        sub = price * int(qty)
-        lines.append(f"• {html.quote(drink)} × {qty} = <b>{sub}₽</b>")
-    return lines
-
-
-def _cart_text(cart: Dict[str, int]) -> str:
-    if not cart:
-        return "🛒 <b>Корзина пустая</b>\n\nЧтобы добавить: нажмите напиток → выберите количество."
-    return "🛒 <b>Ваш заказ:</b>\n" + "\n".join(_cart_lines(cart)) + f"\n\n💰 Итого: <b>{_cart_total(cart)}₽</b>"
-
-
-async def _show_cart(message: Message, state: FSMContext):
-    data = await state.get_data()
-    cart = _get_cart(data)
-    await state.set_state(OrderStates.cart_view)
-    await state.update_data(cart=cart)
-    await message.answer(_cart_text(cart), reply_markup=create_cart_keyboard(bool(cart)))
-
-
-# ---------- Admin demo message ----------
-def _format_ready_line(ready_in_min: int) -> str:
-    if ready_in_min <= 0:
-        return "⏱ Готовность: <b>как можно скорее</b>"
-    ready_at = (get_moscow_time() + timedelta(minutes=ready_in_min)).strftime("%H:%M")
-    return f"⏱ Готовность: <b>через {ready_in_min} мин</b> (к {ready_at} МСК)"
-
-
-def build_admin_order_messages(*, order_num: str, user_id: int, user_name: str, cart: Dict[str, int], total: int, ready_in_min: int) -> tuple[str, str]:
-    safe_user_name = html.quote(user_name)
-    user_link = f'<a href="tg://user?id={user_id}">{safe_user_name}</a>'
-    items_text = "\n".join(_cart_lines(cart)) if cart else "—"
-    msg1 = (
-        f"🔔 <b>НОВЫЙ ЗАКАЗ #{order_num}</b> | {html.quote(CAFE_NAME)}\n\n"
-        f"{user_link}\n<code>{user_id}</code>\n\n"
-        f"{items_text}\n\n"
-        f"💰 Итого: <b>{total} ₽</b>\n"
-        f"{_format_ready_line(ready_in_min)}"
-    )
-    msg2 = "ℹ️ <b>DEMO</b>: так будет выглядеть уведомление администратору."
-    return msg1, msg2
-
-
-# -------------------------
-# /offers
-# -------------------------
+# ---------------- Commands: offers ----------------
 @router.message(Command("offers_off"))
 async def offers_off(message: Message):
     await register_demo_subscriber(message.from_user.id)
-    await customer_set_offers_opt(message.from_user.id, opt_out=True)
-    await message.answer("Ок, персональные предложения отключены. /offers_on — включить.", reply_markup=create_main_keyboard())
+    try:
+        r = await get_redis_client()
+        await r.hset(f"{CUSTOMER_KEY_PREFIX}{message.from_user.id}", "offers_opt_out", "1")
+        await r.aclose()
+    except Exception:
+        pass
+    await message.answer("Ок, предложения отключены. /offers_on — включить.", reply_markup=create_main_keyboard())
 
 
 @router.message(Command("offers_on"))
 async def offers_on(message: Message):
     await register_demo_subscriber(message.from_user.id)
-    await customer_set_offers_opt(message.from_user.id, opt_out=False)
-    await message.answer("Готово! Персональные предложения включены.", reply_markup=create_main_keyboard())
+    try:
+        r = await get_redis_client()
+        await r.hset(f"{CUSTOMER_KEY_PREFIX}{message.from_user.id}", "offers_opt_out", "0")
+        await r.aclose()
+    except Exception:
+        pass
+    await message.answer("Готово! Предложения включены.", reply_markup=create_main_keyboard())
 
 
-# -------------------------
-# /start
-# -------------------------
+# ---------------- /start ----------------
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
     await register_demo_subscriber(message.from_user.id)
+    await sync_menu_from_redis()
 
     name = get_user_name(message)
     msk_time = get_moscow_time().strftime("%H:%M")
-    welcome = random.choice(WELCOME_VARIANTS).format(name=name)
+    welcome = random.choice(WELCOME_VARIANTS).format(name=html.quote(name))
 
-    if is_cafe_open():
-        await message.answer(
-            f"{welcome}\n\n"
-            f"🕐 <i>Московское время: {msk_time}</i>\n"
-            f"🏪 {get_work_status()}{_address_line()}\n\n"
-            "Чтобы добавить в корзину: нажмите напиток → выберите количество.\n"
-            "Корзина — кнопка «🛒 Корзина».",
-            reply_markup=create_main_keyboard(),
-        )
-    else:
-        await message.answer(get_closed_message(), reply_markup=create_info_keyboard())
+    if not is_cafe_open():
+        await message.answer(get_closed_message(), reply_markup=create_main_keyboard())
+        return
+
+    await message.answer(
+        f"{welcome}\n\n🕐 <i>МСК: {msk_time}</i>\n🏪 {get_work_status()}{_address_line()}\n\n"
+        "Чтобы добавить в корзину: нажмите напиток → выберите количество.\n"
+        "Корзина — «🛒 Корзина».",
+        reply_markup=create_main_keyboard(),
+    )
 
 
-# -------------------------
-# Common buttons
-# -------------------------
+# ---------------- Info buttons ----------------
 @router.message(F.text == BTN_CALL)
 async def call_phone(message: Message):
     await register_demo_subscriber(message.from_user.id)
     await message.answer(
-        f"📞 <b>Телефон {html.quote(CAFE_NAME)}:</b>\n<code>{html.quote(CAFE_PHONE)}</code>",
-        reply_markup=create_main_keyboard() if is_cafe_open() else create_info_keyboard(),
+        f"📞 <b>Телефон:</b> <code>{html.quote(CAFE_PHONE)}</code>",
+        reply_markup=create_main_keyboard(),
     )
 
 
@@ -816,36 +715,37 @@ async def show_hours(message: Message):
     await register_demo_subscriber(message.from_user.id)
     msk_time = get_moscow_time().strftime("%H:%M")
     await message.answer(
-        f"🕐 <b>Сейчас:</b> {msk_time} (МСК)\n🏪 {get_work_status()}{_address_line()}",
-        reply_markup=create_main_keyboard() if is_cafe_open() else create_info_keyboard(),
+        f"🕐 <b>Сейчас:</b> {msk_time} (МСК)\n{get_work_status()}{_address_line()}",
+        reply_markup=create_main_keyboard(),
     )
 
 
+# ---------------- Stats ----------------
 @router.message(F.text == BTN_STATS)
 async def stats_button(message: Message):
     await register_demo_subscriber(message.from_user.id)
 
     if message.from_user.id != ADMIN_ID:
-        await message.answer("📊 <b>Статистика (DEMO)</b>\n\nВсего заказов: <b>123</b>", reply_markup=create_main_keyboard())
+        await message.answer("📊 <b>Статистика (DEMO)</b>", reply_markup=create_main_keyboard())
         return
 
     try:
-        r_client = await get_redis_client()
-        total_orders = int(await r_client.get("stats:total_orders") or 0)
-        total_revenue = int(await r_client.get("stats:total_revenue") or 0)
+        r = await get_redis_client()
+        total_orders = int(await r.get(STATS_TOTAL_ORDERS) or 0)
+        total_rev = int(await r.get(STATS_TOTAL_REVENUE) or 0)
 
         lines = []
-        for drink, price in MENU.items():
-            cnt = int(await r_client.get(f"stats:drink:{drink}") or 0)
-            rev = int(await r_client.get(f"stats:drink_revenue:{drink}") or 0)
+        for drink in MENU.keys():
+            cnt = int(await r.get(f"{STATS_DRINK_PREFIX}{drink}") or 0)
+            rev = int(await r.get(f"{STATS_DRINK_REV_PREFIX}{drink}") or 0)
             lines.append(f"• {html.quote(drink)}: <b>{cnt}</b> шт., <b>{rev}₽</b>")
 
-        await r_client.aclose()
+        await r.aclose()
 
         text = (
             "📊 <b>Статистика</b>\n\n"
             f"Всего заказов: <b>{total_orders}</b>\n"
-            f"Выручка всего: <b>{total_revenue}₽</b>\n\n"
+            f"Выручка всего: <b>{total_rev}₽</b>\n\n"
             "<b>По позициям:</b>\n" + "\n".join(lines)
         )
         await message.answer(text, reply_markup=create_main_keyboard())
@@ -853,14 +753,12 @@ async def stats_button(message: Message):
         await message.answer("❌ Ошибка статистики", reply_markup=create_main_keyboard())
 
 
-# -------------------------
-# Cart buttons
-# -------------------------
+# ---------------- Cart show/clear/cancel ----------------
 @router.message(F.text == BTN_CART)
 async def cart_button(message: Message, state: FSMContext):
     await register_demo_subscriber(message.from_user.id)
     if not is_cafe_open():
-        await message.answer(get_closed_message(), reply_markup=create_info_keyboard())
+        await message.answer(get_closed_message(), reply_markup=create_main_keyboard())
         return
     await _show_cart(message, state)
 
@@ -876,71 +774,10 @@ async def clear_cart(message: Message, state: FSMContext):
 async def cancel_order(message: Message, state: FSMContext):
     await register_demo_subscriber(message.from_user.id)
     await state.clear()
-    await message.answer("❌ Заказ отменён.", reply_markup=create_main_keyboard() if is_cafe_open() else create_info_keyboard())
+    await message.answer("❌ Заказ отменён.", reply_markup=create_main_keyboard())
 
 
-# -------------------------
-# Add item: drink -> quantity
-# -------------------------
-async def _start_add_item(message: Message, state: FSMContext, drink: str):
-    price = MENU.get(drink)
-    if price is None:
-        await message.answer("Этого напитка уже нет в меню.", reply_markup=create_main_keyboard())
-        return
-
-    data = await state.get_data()
-    cart = _get_cart(data)
-
-    await state.set_state(OrderStates.waiting_for_quantity)
-    await state.update_data(current_drink=drink, current_price=price, cart=cart)
-
-    choice_text = random.choice(CHOICE_VARIANTS).format(name=get_user_name(message))
-    await message.answer(
-        f"{choice_text}\n\n🥤 <b>{html.quote(drink)}</b>\n💰 <b>{price} ₽</b>\n\nСколько порций добавить в корзину?",
-        reply_markup=create_quantity_keyboard(),
-    )
-
-
-@router.message(StateFilter(OrderStates.waiting_for_quantity))
-async def process_quantity(message: Message, state: FSMContext):
-    await register_demo_subscriber(message.from_user.id)
-
-    if message.text == BTN_CANCEL:
-        data = await state.get_data()
-        cart = _get_cart(data)
-        await message.answer("Ок. Добавление отменено.", reply_markup=create_cart_keyboard(bool(cart)) if cart else create_main_keyboard())
-        return
-
-    try:
-        quantity = int((message.text or "")[0])
-        if not (1 <= quantity <= 5):
-            raise ValueError
-    except Exception:
-        await message.answer("Нажмите количество 1–5.", reply_markup=create_quantity_keyboard())
-        return
-
-    data = await state.get_data()
-    drink = str(data.get("current_drink") or "")
-    cart = _get_cart(data)
-
-    if not drink or drink not in MENU:
-        await state.clear()
-        await message.answer("Ошибка. Нажмите /start.", reply_markup=create_main_keyboard())
-        return
-
-    cart[drink] = int(cart.get(drink, 0)) + quantity
-    await state.update_data(cart=cart)
-    await state.set_state(OrderStates.cart_view)
-
-    await message.answer(
-        f"✅ Добавил в корзину: <b>{html.quote(drink)}</b> × {quantity}\n\n{_cart_text(cart)}",
-        reply_markup=create_cart_keyboard(True),
-    )
-
-
-# -------------------------
-# Cart edit
-# -------------------------
+# ---------------- Cart edit ----------------
 @router.message(F.text == BTN_EDIT_CART)
 async def edit_cart(message: Message, state: FSMContext):
     await register_demo_subscriber(message.from_user.id)
@@ -950,14 +787,14 @@ async def edit_cart(message: Message, state: FSMContext):
         await message.answer("Корзина пустая.", reply_markup=create_main_keyboard())
         return
     await state.set_state(OrderStates.cart_edit_pick_item)
-    await message.answer("Выберите позицию для изменения:", reply_markup=create_cart_pick_item_keyboard(cart))
+    await message.answer("Выберите позицию:", reply_markup=create_cart_pick_item_keyboard(cart))
 
 
 @router.message(StateFilter(OrderStates.cart_edit_pick_item))
 async def pick_item_to_edit(message: Message, state: FSMContext):
     await register_demo_subscriber(message.from_user.id)
-    text = (message.text or "").strip()
 
+    text = (message.text or "").strip()
     if text in {BTN_CANCEL, BTN_CART}:
         await _show_cart(message, state)
         return
@@ -976,9 +813,9 @@ async def pick_item_to_edit(message: Message, state: FSMContext):
 @router.message(StateFilter(OrderStates.cart_edit_pick_action))
 async def cart_edit_action(message: Message, state: FSMContext):
     await register_demo_subscriber(message.from_user.id)
-    text = (message.text or "").strip()
 
-    if text == BTN_CANCEL:
+    action = (message.text or "").strip()
+    if action == BTN_CANCEL:
         await _show_cart(message, state)
         return
 
@@ -986,51 +823,96 @@ async def cart_edit_action(message: Message, state: FSMContext):
     cart = _get_cart(data)
     item = str(data.get("edit_item") or "")
 
+    if action == CART_ACT_DONE:
+        await _show_cart(message, state)
+        return
+
     if not item or item not in cart:
         await _show_cart(message, state)
         return
 
-    if text == CART_ACT_DONE:
-        await _show_cart(message, state)
-        return
-
-    if text == CART_ACT_PLUS:
+    if action == CART_ACT_PLUS:
         cart[item] = int(cart.get(item, 0)) + 1
-    elif text == CART_ACT_MINUS:
+    elif action == CART_ACT_MINUS:
         cart[item] = int(cart.get(item, 0)) - 1
         if cart[item] <= 0:
             cart.pop(item, None)
-    elif text == CART_ACT_DEL:
+    elif action == CART_ACT_DEL:
         cart.pop(item, None)
     else:
         await message.answer("Выберите действие кнопкой.", reply_markup=create_cart_edit_actions_keyboard())
         return
 
     await state.update_data(cart=cart)
-
-    if not cart:
-        await state.set_state(OrderStates.cart_view)
-        await message.answer("Корзина теперь пустая.", reply_markup=create_main_keyboard())
-        return
-
-    await state.set_state(OrderStates.cart_edit_pick_item)
-    await message.answer(_cart_text(cart), reply_markup=create_cart_pick_item_keyboard(cart))
+    await _show_cart(message, state)
 
 
-# -------------------------
-# Checkout -> confirm -> ready time -> finalize
-# -------------------------
-@router.message(F.text == BTN_CHECKOUT)
-async def checkout(message: Message, state: FSMContext):
-    await register_demo_subscriber(message.from_user.id)
-    if not is_cafe_open():
-        await message.answer(get_closed_message(), reply_markup=create_info_keyboard())
+# ---------------- Add item: drink -> quantity ----------------
+async def _start_add_item(message: Message, state: FSMContext, drink: str):
+    price = MENU.get(drink)
+    if price is None:
+        await message.answer("Этой позиции уже нет.", reply_markup=create_main_keyboard())
         return
 
     data = await state.get_data()
     cart = _get_cart(data)
+
+    await state.set_state(OrderStates.waiting_for_quantity)
+    await state.update_data(current_drink=drink, cart=cart)
+
+    choice_text = random.choice(CHOICE_VARIANTS).format(name=get_user_name(message))
+    await message.answer(
+        f"{choice_text}\n\n🥤 <b>{html.quote(drink)}</b>\n💰 <b>{price}₽</b>\n\nСколько добавить?",
+        reply_markup=create_quantity_keyboard(),
+    )
+
+
+@router.message(StateFilter(OrderStates.waiting_for_quantity))
+async def process_quantity(message: Message, state: FSMContext):
+    await register_demo_subscriber(message.from_user.id)
+
+    if message.text == BTN_CANCEL:
+        data = await state.get_data()
+        cart = _get_cart(data)
+        await message.answer("Ок.", reply_markup=create_cart_keyboard(bool(cart)) if cart else create_main_keyboard())
+        return
+
+    try:
+        qty = int((message.text or "")[0])
+        if not (1 <= qty <= 5):
+            raise ValueError
+    except Exception:
+        await message.answer("Нажмите 1–5.", reply_markup=create_quantity_keyboard())
+        return
+
+    data = await state.get_data()
+    drink = str(data.get("current_drink") or "")
+    cart = _get_cart(data)
+
+    if not drink or drink not in MENU:
+        await state.clear()
+        await message.answer("Ошибка. Нажмите /start.", reply_markup=create_main_keyboard())
+        return
+
+    cart[drink] = int(cart.get(drink, 0)) + qty
+    await state.update_data(cart=cart)
+    await state.set_state(OrderStates.cart_view)
+
+    await message.answer(f"✅ Добавил в корзину: <b>{html.quote(drink)}</b> × {qty}\n\n{_cart_text(cart)}",
+                         reply_markup=create_cart_keyboard(True))
+
+
+# ---------------- Checkout ----------------
+@router.message(F.text == BTN_CHECKOUT)
+async def checkout(message: Message, state: FSMContext):
+    await register_demo_subscriber(message.from_user.id)
+    if not is_cafe_open():
+        await message.answer(get_closed_message(), reply_markup=create_main_keyboard())
+        return
+
+    cart = _get_cart(await state.get_data())
     if not cart:
-        await message.answer("Корзина пустая — добавьте позицию.", reply_markup=create_main_keyboard())
+        await message.answer("Корзина пустая.", reply_markup=create_main_keyboard())
         return
 
     await state.set_state(OrderStates.waiting_for_confirmation)
@@ -1038,24 +920,24 @@ async def checkout(message: Message, state: FSMContext):
 
 
 @router.message(StateFilter(OrderStates.waiting_for_confirmation))
-async def process_cart_confirmation(message: Message, state: FSMContext):
+async def confirm_order(message: Message, state: FSMContext):
     await register_demo_subscriber(message.from_user.id)
+
+    if message.text == BTN_CANCEL_ORDER:
+        await state.clear()
+        await message.answer("❌ Отменено.", reply_markup=create_main_keyboard())
+        return
 
     if message.text == BTN_CART:
         await _show_cart(message, state)
         return
 
-    if message.text == BTN_CANCEL_ORDER:
-        await state.clear()
-        await message.answer("❌ Заказ отменён.", reply_markup=create_main_keyboard())
-        return
-
     if message.text != BTN_CONFIRM:
-        await message.answer("Нажмите «Подтвердить» или «Корзина».", reply_markup=create_confirm_keyboard())
+        await message.answer("Нажмите «Подтвердить».", reply_markup=create_confirm_keyboard())
         return
 
     await state.set_state(OrderStates.waiting_for_ready_time)
-    await message.answer("⏱ <b>Когда удобно забрать заказ?</b>", reply_markup=create_ready_time_keyboard())
+    await message.answer("Когда забрать?", reply_markup=create_ready_time_keyboard())
 
 
 async def _finalize_order(message: Message, state: FSMContext, ready_in_min: int):
@@ -1064,62 +946,40 @@ async def _finalize_order(message: Message, state: FSMContext, ready_in_min: int
     cart = _get_cart(data)
     if not cart:
         await state.clear()
-        await message.answer("Корзина пустая. Нажмите /start.", reply_markup=create_main_keyboard())
+        await message.answer("Корзина пустая.", reply_markup=create_main_keyboard())
         return
 
+    # anti-spam
     try:
-        r_client = await get_redis_client()
-        last_order = await r_client.get(_rate_limit_key(user_id))
+        r = await get_redis_client()
+        last_order = await r.get(_rate_limit_key(user_id))
         if last_order and time.time() - float(last_order) < RATE_LIMIT_SECONDS:
+            await r.aclose()
             await message.answer(f"⏳ Подождите {RATE_LIMIT_SECONDS} секунд между заказами.", reply_markup=create_main_keyboard())
-            await r_client.aclose()
             await state.clear()
             return
-        await r_client.setex(_rate_limit_key(user_id), RATE_LIMIT_SECONDS, time.time())
-        await r_client.aclose()
+        await r.setex(_rate_limit_key(user_id), RATE_LIMIT_SECONDS, str(time.time()))
+        await r.aclose()
     except Exception:
         pass
 
     total = _cart_total(cart)
 
-    order_id = f"order:{int(time.time())}:{user_id}"
-    order_num = order_id.split(":")[-1]
-
-    user_name = message.from_user.username or message.from_user.first_name or "Клиент"
-    ready_at_dt = get_moscow_time() + timedelta(minutes=max(0, ready_in_min))
-    ready_at_str = ready_at_dt.strftime("%H:%M")
-
-    # save order + stats
+    # stats
     try:
-        r_client = await get_redis_client()
-        await r_client.hset(
-            order_id,
-            mapping={
-                "user_id": user_id,
-                "username": user_name,
-                "cart_json": json.dumps(cart, ensure_ascii=False),
-                "total": total,
-                "ready_in_min": ready_in_min,
-                "ready_at_msk": ready_at_str,
-                "timestamp": datetime.now().isoformat(),
-            },
-        )
-        await r_client.expire(order_id, 86400)
-
-        # ---- Stats counters ----
-        await r_client.incr("stats:total_orders")
-        await r_client.incrby("stats:total_revenue", int(total))  # [web:216]
-
+        r = await get_redis_client()
+        await r.incr(STATS_TOTAL_ORDERS)
+        await r.incrby(STATS_TOTAL_REVENUE, int(total))
         for drink, qty in cart.items():
             qty_i = int(qty)
             price = int(MENU.get(drink, 0))
-            await r_client.incrby(f"stats:drink:{drink}", qty_i)  # [web:216]
-            await r_client.incrby(f"stats:drink_revenue:{drink}", qty_i * price)  # [web:216]
-
-        await r_client.aclose()
+            await r.incrby(f"{STATS_DRINK_PREFIX}{drink}", qty_i)
+            await r.incrby(f"{STATS_DRINK_REV_PREFIX}{drink}", qty_i * price)
+        await r.aclose()
     except Exception:
         pass
 
+    # customer profile for return loop
     try:
         await customer_mark_order(
             user_id=user_id,
@@ -1131,30 +991,30 @@ async def _finalize_order(message: Message, state: FSMContext, ready_in_min: int
     except Exception:
         pass
 
-    msg1, msg2 = build_admin_order_messages(
-        order_num=order_num,
-        user_id=user_id,
-        user_name=user_name,
-        cart=cart,
-        total=total,
-        ready_in_min=ready_in_min,
+    order_num = str(int(time.time()))[-6:]
+    ready_at_str = (get_moscow_time() + timedelta(minutes=max(0, ready_in_min))).strftime("%H:%M")
+    ready_line = "как можно скорее" if ready_in_min <= 0 else f"через {ready_in_min} мин (к {ready_at_str} МСК)"
+
+    # demo admin
+    admin_msg = (
+        f"🔔 <b>НОВЫЙ ЗАКАЗ #{order_num}</b> | {html.quote(CAFE_NAME)}\n\n"
+        f"<a href=\"tg://user?id={user_id}\">{html.quote(message.from_user.username or message.from_user.first_name or 'Клиент')}</a>\n"
+        f"<code>{user_id}</code>\n\n" +
+        "\n".join(_cart_lines(cart)) +
+        f"\n\n💰 Итого: <b>{total}₽</b>\n⏱ Готовность: <b>{html.quote(ready_line)}</b>"
     )
-    await send_to_demo_audience(message.bot, msg1, include_admin=True)
-    await send_to_demo_audience(message.bot, msg2, include_admin=True)
+    await send_to_demo_audience(message.bot, admin_msg, include_admin=True)
 
-    finish_text = random.choice(FINISH_VARIANTS).format(name=get_user_name(message))
-    ready_user_line = "⏱ Готовность: как можно скорее" if ready_in_min <= 0 else f"⏱ Готовность: через {ready_in_min} мин (к {ready_at_str} МСК)"
-    items = "\n".join(_cart_lines(cart))
-
+    finish = random.choice(FINISH_VARIANTS).format(name=get_user_name(message))
     await message.answer(
-        f"🎉 <b>Заказ #{order_num} принят!</b>\n\n{items}\n\n💰 Итого: <b>{total}₽</b>\n{ready_user_line}\n\n{finish_text}",
+        f"🎉 <b>Заказ принят!</b>\n\n{_cart_text(cart)}\n\n⏱ Готовность: {html.quote(ready_line)}\n\n{finish}",
         reply_markup=create_main_keyboard(),
     )
     await state.clear()
 
 
 @router.message(StateFilter(OrderStates.waiting_for_ready_time))
-async def process_ready_time(message: Message, state: FSMContext):
+async def ready_time(message: Message, state: FSMContext):
     await register_demo_subscriber(message.from_user.id)
 
     if message.text == BTN_CANCEL:
@@ -1169,19 +1029,17 @@ async def process_ready_time(message: Message, state: FSMContext):
         await _finalize_order(message, state, 20)
         return
 
-    await message.answer("Выберите вариант кнопкой.", reply_markup=create_ready_time_keyboard())
+    await message.answer("Выберите кнопкой.", reply_markup=create_ready_time_keyboard())
 
 
-# -------------------------
-# Booking (компактно)
-# -------------------------
+# ---------------- Booking ----------------
 @router.message(F.text == BTN_BOOKING)
 async def booking_start(message: Message, state: FSMContext):
     await register_demo_subscriber(message.from_user.id)
     await state.clear()
 
     if not is_cafe_open():
-        await message.answer(get_closed_message(), reply_markup=create_info_keyboard())
+        await message.answer(get_closed_message(), reply_markup=create_main_keyboard())
         return
 
     await state.set_state(BookingStates.waiting_for_datetime)
@@ -1195,7 +1053,7 @@ async def booking_start(message: Message, state: FSMContext):
 async def booking_datetime(message: Message, state: FSMContext):
     await register_demo_subscriber(message.from_user.id)
 
-    if message.text in {BTN_CANCEL, BTN_MENU}:
+    if message.text == BTN_CANCEL:
         await state.clear()
         await message.answer("Ок, отменил.", reply_markup=create_main_keyboard())
         return
@@ -1215,14 +1073,14 @@ async def booking_datetime(message: Message, state: FSMContext):
 
     await state.update_data(booking_dt=dt.strftime("%d.%m %H:%M"))
     await state.set_state(BookingStates.waiting_for_people)
-    await message.answer("Сколько гостей?", reply_markup=create_booking_people_keyboard())
+    await message.answer("Сколько гостей? (1–10)", reply_markup=create_booking_people_keyboard())
 
 
 @router.message(StateFilter(BookingStates.waiting_for_people))
 async def booking_people(message: Message, state: FSMContext):
     await register_demo_subscriber(message.from_user.id)
 
-    if message.text in {BTN_CANCEL, BTN_MENU}:
+    if message.text == BTN_CANCEL:
         await state.clear()
         await message.answer("Ок, отменил.", reply_markup=create_main_keyboard())
         return
@@ -1232,7 +1090,7 @@ async def booking_people(message: Message, state: FSMContext):
         if not (1 <= people <= 10):
             raise ValueError
     except Exception:
-        await message.answer("Число 1–10.", reply_markup=create_booking_people_keyboard())
+        await message.answer("Нужно число 1–10.", reply_markup=create_booking_people_keyboard())
         return
 
     await state.update_data(booking_people=people)
@@ -1244,51 +1102,43 @@ async def booking_people(message: Message, state: FSMContext):
 async def booking_finish(message: Message, state: FSMContext):
     await register_demo_subscriber(message.from_user.id)
 
-    if message.text in {BTN_CANCEL, BTN_MENU}:
+    if message.text == BTN_CANCEL:
         await state.clear()
         await message.answer("Ок, отменил.", reply_markup=create_main_keyboard())
         return
 
     data = await state.get_data()
-    dt_str = data.get("booking_dt", "—")
-    people = int(data.get("booking_people", 0) or 0)
+    dt_str = str(data.get("booking_dt") or "—")
+    people = int(data.get("booking_people") or 0)
     comment = (message.text or "").strip() or "-"
-    comment_out = "—" if comment == "-" else comment
+    booking_id = str(int(time.time()))[-6:]
 
-    booking_id = f"{int(time.time())}{message.from_user.id}"
     await message.answer("✅ Заявка на бронь принята!", reply_markup=create_main_keyboard())
 
+    user_id = message.from_user.id
     user_name = message.from_user.username or message.from_user.first_name or "Клиент"
-    msg1 = (
+    msg = (
         f"📋 <b>НОВАЯ БРОНЬ #{booking_id}</b> | {html.quote(CAFE_NAME)}\n\n"
-        f"<a href=\"tg://user?id={message.from_user.id}\">{html.quote(user_name)}</a>\n"
-        f"<code>{message.from_user.id}</code>\n\n"
-        f"🗓 {html.quote(dt_str)}\n👥 {people} чел.\n💬 {html.quote(comment_out)}"
+        f"<a href=\"tg://user?id={user_id}\">{html.quote(user_name)}</a>\n<code>{user_id}</code>\n\n"
+        f"🗓 {html.quote(dt_str)}\n👥 {people} чел.\n💬 {html.quote(comment)}"
     )
-    await send_to_demo_audience(message.bot, msg1, include_admin=True)
+    await send_to_demo_audience(message.bot, msg, include_admin=True)
     await state.clear()
 
 
-# -------------------------
-# Menu edit (админ)
-# -------------------------
-def _menu_as_text() -> str:
-    if not MENU:
-        return "Меню пока пустое."
-    return "\n".join([f"• <b>{html.quote(k)}</b> — {v}₽" for k, v in MENU.items()])
-
-
+# ---------------- Menu edit (admin, choose by buttons) ----------------
 @router.message(F.text == BTN_MENU_EDIT)
 async def menu_edit_entry(message: Message, state: FSMContext):
     await register_demo_subscriber(message.from_user.id)
 
     if message.from_user.id != ADMIN_ID:
-        await message.answer("🛠 Управление меню доступно админу.\n\n" + _menu_as_text(), reply_markup=create_main_keyboard())
+        await message.answer("🛠 Управление меню доступно админу.", reply_markup=create_main_keyboard())
         return
 
+    await sync_menu_from_redis()
     await state.clear()
     await state.set_state(MenuEditStates.waiting_for_action)
-    await message.answer("🛠 Управление меню\n\n" + _menu_as_text(), reply_markup=create_menu_edit_keyboard())
+    await message.answer("🛠 Управление меню: выберите действие", reply_markup=create_menu_edit_keyboard())
 
 
 @router.message(StateFilter(MenuEditStates.waiting_for_action))
@@ -1304,17 +1154,17 @@ async def menu_edit_choose_action(message: Message, state: FSMContext):
 
     if message.text == MENU_EDIT_ADD:
         await state.set_state(MenuEditStates.waiting_for_add_name)
-        await message.answer("Название новой позиции:", reply_markup=create_menu_edit_cancel_keyboard())
+        await message.answer("Введите название новой позиции:", reply_markup=create_menu_edit_cancel_keyboard())
         return
 
     if message.text == MENU_EDIT_EDIT:
-        await state.set_state(MenuEditStates.waiting_for_edit_name)
-        await message.answer("Название позиции для смены цены:\n\n" + _menu_as_text(), reply_markup=create_menu_edit_cancel_keyboard())
+        await state.set_state(MenuEditStates.pick_edit_item)
+        await message.answer("Выберите позицию для изменения цены:", reply_markup=create_pick_menu_item_keyboard())
         return
 
     if message.text == MENU_EDIT_DEL:
-        await state.set_state(MenuEditStates.waiting_for_remove_name)
-        await message.answer("Название позиции для удаления:\n\n" + _menu_as_text(), reply_markup=create_menu_edit_cancel_keyboard())
+        await state.set_state(MenuEditStates.pick_remove_item)
+        await message.answer("Выберите позицию для удаления:", reply_markup=create_pick_menu_item_keyboard())
         return
 
     await message.answer("Выберите действие кнопкой.", reply_markup=create_menu_edit_keyboard())
@@ -1325,17 +1175,20 @@ async def menu_edit_add_name(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         await state.clear()
         return
+
     if message.text == BTN_BACK:
         await state.set_state(MenuEditStates.waiting_for_action)
-        await message.answer("Выберите действие:", reply_markup=create_menu_edit_keyboard())
+        await message.answer("Ок.", reply_markup=create_menu_edit_keyboard())
         return
+
     name = (message.text or "").strip()
-    if not name or _is_reserved_button(name):
-        await message.answer("Некорректное название.", reply_markup=create_menu_edit_cancel_keyboard())
+    if not name:
+        await message.answer("Введите название.", reply_markup=create_menu_edit_cancel_keyboard())
         return
+
     await state.update_data(add_name=name)
     await state.set_state(MenuEditStates.waiting_for_add_price)
-    await message.answer("Цена числом:", reply_markup=create_menu_edit_cancel_keyboard())
+    await message.answer("Введите цену числом:", reply_markup=create_menu_edit_cancel_keyboard())
 
 
 @router.message(StateFilter(MenuEditStates.waiting_for_add_price))
@@ -1343,156 +1196,155 @@ async def menu_edit_add_price(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         await state.clear()
         return
+
     if message.text == BTN_BACK:
         await state.set_state(MenuEditStates.waiting_for_action)
-        await message.answer("Выберите действие:", reply_markup=create_menu_edit_keyboard())
+        await message.answer("Ок.", reply_markup=create_menu_edit_keyboard())
         return
+
     try:
         price = int((message.text or "").strip())
-        if price <= 0 or price > 100000:
+        if price <= 0:
             raise ValueError
     except Exception:
         await message.answer("Цена должна быть числом.", reply_markup=create_menu_edit_cancel_keyboard())
         return
+
     data = await state.get_data()
-    name = (data.get("add_name") or "").strip()
+    name = str(data.get("add_name") or "").strip()
     await menu_set_item(name, price)
     await state.clear()
-    await message.answer("✅ Добавлено.\n\n" + _menu_as_text(), reply_markup=create_main_keyboard())
+    await message.answer("✅ Добавлено.", reply_markup=create_main_keyboard())
 
 
-@router.message(StateFilter(MenuEditStates.waiting_for_edit_name))
-async def menu_edit_edit_name(message: Message, state: FSMContext):
+@router.message(StateFilter(MenuEditStates.pick_edit_item))
+async def menu_pick_edit_item(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         await state.clear()
         return
+
     if message.text == BTN_BACK:
         await state.set_state(MenuEditStates.waiting_for_action)
-        await message.answer("Выберите действие:", reply_markup=create_menu_edit_keyboard())
+        await message.answer("Ок.", reply_markup=create_menu_edit_keyboard())
         return
-    name = (message.text or "").strip()
-    if name not in MENU:
-        await message.answer("Не нашёл такую позицию.", reply_markup=create_menu_edit_cancel_keyboard())
+
+    picked = (message.text or "").strip()
+    if picked not in MENU:
+        await message.answer("Выберите позицию кнопкой.", reply_markup=create_pick_menu_item_keyboard())
         return
-    await state.update_data(edit_name=name)
+
+    await state.update_data(edit_name=picked)
     await state.set_state(MenuEditStates.waiting_for_edit_price)
-    await message.answer(f"Новая цена для <b>{html.quote(name)}</b>:", reply_markup=create_menu_edit_cancel_keyboard())
+    await message.answer(f"Новая цена для <b>{html.quote(picked)}</b>:", reply_markup=create_menu_edit_cancel_keyboard())
 
 
 @router.message(StateFilter(MenuEditStates.waiting_for_edit_price))
-async def menu_edit_edit_price(message: Message, state: FSMContext):
+async def menu_edit_price(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         await state.clear()
         return
+
     if message.text == BTN_BACK:
         await state.set_state(MenuEditStates.waiting_for_action)
-        await message.answer("Выберите действие:", reply_markup=create_menu_edit_keyboard())
+        await message.answer("Ок.", reply_markup=create_menu_edit_keyboard())
         return
+
     try:
         price = int((message.text or "").strip())
-        if price <= 0 or price > 100000:
+        if price <= 0:
             raise ValueError
     except Exception:
         await message.answer("Цена должна быть числом.", reply_markup=create_menu_edit_cancel_keyboard())
         return
+
     data = await state.get_data()
-    name = (data.get("edit_name") or "").strip()
+    name = str(data.get("edit_name") or "")
+    if name not in MENU:
+        await state.clear()
+        await message.answer("Позиция не найдена. Обновите /start.", reply_markup=create_main_keyboard())
+        return
+
     await menu_set_item(name, price)
     await state.clear()
-    await message.answer("✅ Цена изменена.\n\n" + _menu_as_text(), reply_markup=create_main_keyboard())
+    await message.answer("✅ Цена изменена.", reply_markup=create_main_keyboard())
 
 
-@router.message(StateFilter(MenuEditStates.waiting_for_remove_name))
-async def menu_edit_remove(message: Message, state: FSMContext):
+@router.message(StateFilter(MenuEditStates.pick_remove_item))
+async def menu_pick_remove_item(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         await state.clear()
         return
+
     if message.text == BTN_BACK:
         await state.set_state(MenuEditStates.waiting_for_action)
-        await message.answer("Выберите действие:", reply_markup=create_menu_edit_keyboard())
+        await message.answer("Ок.", reply_markup=create_menu_edit_keyboard())
         return
-    name = (message.text or "").strip()
-    if name not in MENU:
-        await message.answer("Не нашёл такую позицию.", reply_markup=create_menu_edit_cancel_keyboard())
+
+    picked = (message.text or "").strip()
+    if picked not in MENU:
+        await message.answer("Выберите позицию кнопкой.", reply_markup=create_pick_menu_item_keyboard())
         return
-    await menu_delete_item(name)
+
+    await menu_delete_item(picked)
     await state.clear()
-    await message.answer("🗑 Удалено.\n\n" + _menu_as_text(), reply_markup=create_main_keyboard())
+    await message.answer("🗑 Удалено.", reply_markup=create_main_keyboard())
 
 
-# -------------------------
-# Drink selection + fallback text
-# -------------------------
+# ---------------- Fallback: drink pick ----------------
 @router.message(F.text)
 async def any_text(message: Message, state: FSMContext):
     await register_demo_subscriber(message.from_user.id)
-    text = (message.text or "").strip()
 
+    text = (message.text or "").strip()
     if text in MENU:
         if not is_cafe_open():
-            await message.answer(get_closed_message(), reply_markup=create_info_keyboard())
+            await message.answer(get_closed_message(), reply_markup=create_main_keyboard())
             return
         await _start_add_item(message, state, text)
         return
 
-    if _is_reserved_button(text):
-        return
-
+    # если пользователь что-то пишет не по сценарию
     await message.answer(
-        "Чтобы добавить в корзину: нажмите напиток → выберите количество.\n"
-        "Если пропали кнопки на iOS — нажмите /start.",
+        "Нажмите напиток, чтобы добавить в корзину, или «🛒 Корзина». Если пропали кнопки — /start.",
         reply_markup=create_main_keyboard(),
     )
 
 
-# -------------------------
-# Startup / Webhook
-# -------------------------
-_smart_return_task: Optional[asyncio.Task] = None
+# ---------------- Startup/Webhook ----------------
+_smart_task: Optional[asyncio.Task] = None
 
 
 async def on_startup(bot: Bot) -> None:
-    global _smart_return_task
-
-    logger.info("🚀 Запуск бота...")
-    logger.info(f"☕ Кафе: {CAFE_NAME}")
-    logger.info(f"📍 Адрес: {CAFE_ADDRESS}")
-    logger.info(f"⏰ Часы: {WORK_START}:00–{WORK_END}:00 (МСК)")
-    logger.info(f"🔗 Webhook: {WEBHOOK_URL}")
-
+    global _smart_task
     await sync_menu_from_redis()
 
-    try:
-        if _smart_return_task is None or _smart_return_task.done():
-            _smart_return_task = asyncio.create_task(smart_return_loop(bot))
-    except Exception:
-        pass
+    if _smart_task is None or _smart_task.done():
+        _smart_task = asyncio.create_task(smart_return_loop(bot))
 
     try:
         await bot.set_webhook(WEBHOOK_URL, secret_token=WEBHOOK_SECRET)
     except Exception as e:
-        logger.error(f"❌ Webhook ошибка: {e}")
+        logger.error(f"Webhook set error: {e}")
 
 
 async def main():
     if not BOT_TOKEN:
-        logger.error("❌ BOT_TOKEN не найден!")
+        logger.error("BOT_TOKEN not set")
         return
     if not REDIS_URL:
-        logger.error("❌ REDIS_URL не найден!")
+        logger.error("REDIS_URL not set")
         return
 
     bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
     storage = RedisStorage.from_url(REDIS_URL)
     dp = Dispatcher(storage=storage)
     dp.include_router(router)
-
     dp.startup.register(on_startup)
 
     app = web.Application()
 
     async def healthcheck(request: web.Request):
-        return web.json_response({"status": "healthy", "bot": "ready"})
+        return web.json_response({"status": "healthy"})
 
     app.router.add_get("/", healthcheck)
 
@@ -1506,10 +1358,10 @@ async def main():
     setup_application(app, dp, bot=bot)
 
     async def _on_shutdown(a: web.Application):
-        global _smart_return_task
+        global _smart_task
         try:
-            if _smart_return_task and not _smart_return_task.done():
-                _smart_return_task.cancel()
+            if _smart_task and not _smart_task.done():
+                _smart_task.cancel()
         except Exception:
             pass
         try:
