@@ -21,7 +21,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
 import uuid
-import httpx  # добавь в requirements.txt: httpx>=0.27.0,<1.0
+import httpx  # не забудь в requirements.txt: httpx>=0.27.0,<1.0
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -140,6 +140,9 @@ MENU: Dict[str, int] = dict(cafe_config["menu"])
 WORK_START = int(cafe_config["work_start"])
 WORK_END = int(cafe_config["work_end"])
 RETURN_CYCLE_DAYS = int(cafe_config.get("return_cycle_days", DEFAULT_RETURN_CYCLE_DAYS))
+
+# суперадмин (можешь вынести в отдельную переменную/ENV)
+SUPERADMIN_ID = ADMIN_ID
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 REDIS_URL = os.getenv("REDIS_URL")
@@ -1000,7 +1003,8 @@ async def _start_add_item(message: Message, state: FSMContext, drink: str):
     await state.update_data(current_drink=drink, cart=cart)
 
     await message.answer(
-        f"{random.choice(CHOICE_VARIANTS)}\n\n🥤 <b>{html.quote(drink)}</b>\n💰 <b>{price}₽</b>\n\nСколько добавить?",
+        f"{random.choice(CHOICE_VARIANTS)}\n\n"
+        f"🥤 <b>{html.quote(drink)}</b>\n💰 <b>{price}₽</b>\n\nСколько добавить?",
         reply_markup=create_quantity_keyboard(),
     )
 
@@ -1164,7 +1168,7 @@ async def booking_start(message: Message, state: FSMContext):
 
     await state.set_state(BookingStates.waiting_for_datetime)
     await message.answer(
-        "📅 <b>Бронирование</b>\n\nНапишите дату и время: <code>15.02 19:00</code>\nИли «Отмена».",
+        "📅 Введите дату и время в формате <code>15.02 19:00</code>.",
         reply_markup=create_booking_cancel_keyboard(),
     )
 
@@ -1173,12 +1177,12 @@ async def booking_start(message: Message, state: FSMContext):
 async def booking_datetime(message: Message, state: FSMContext):
     if message.text == BTN_CANCEL:
         await state.clear()
-        await message.answer("Ок, отменил.", reply_markup=create_main_keyboard())
+        await message.answer("Ок, бронирование отменено.", reply_markup=create_main_keyboard())
         return
 
-    m = re.match(r"^\s*(\d{1,2})\.(\d{1,2})\s+(\d{1,2}):(\d{2})\s*$", message.text or "")
+    m = re.match(r"(\d{1,2})\.(\d{1,2})\s+(\d{1,2}):(\d{2})", message.text or "")
     if not m:
-        await message.answer("Формат: <code>15.02 19:00</code>", reply_markup=create_booking_cancel_keyboard())
+        await message.answer("Формат: <code>15.02 19:00</code>.", reply_markup=create_booking_cancel_keyboard())
         return
 
     day, month, hour, minute = map(int, m.groups())
@@ -1186,19 +1190,19 @@ async def booking_datetime(message: Message, state: FSMContext):
     try:
         dt = datetime(year, month, day, hour, minute, tzinfo=MSK_TZ)
     except Exception:
-        await message.answer("Дата/время некорректны.", reply_markup=create_booking_cancel_keyboard())
+        await message.answer("Не удалось разобрать дату/время.", reply_markup=create_booking_cancel_keyboard())
         return
 
     await state.update_data(booking_dt=dt.strftime("%d.%m %H:%M"))
     await state.set_state(BookingStates.waiting_for_people)
-    await message.answer("Сколько гостей? (1–10)", reply_markup=create_booking_people_keyboard())
+    await message.answer("На сколько человек? (1–10)", reply_markup=create_booking_people_keyboard())
 
 
 @router.message(StateFilter(BookingStates.waiting_for_people))
 async def booking_people(message: Message, state: FSMContext):
     if message.text == BTN_CANCEL:
         await state.clear()
-        await message.answer("Ок, отменил.", reply_markup=create_main_keyboard())
+        await message.answer("Ок, бронирование отменено.", reply_markup=create_main_keyboard())
         return
 
     try:
@@ -1206,35 +1210,38 @@ async def booking_people(message: Message, state: FSMContext):
         if not (1 <= people <= 10):
             raise ValueError
     except Exception:
-        await message.answer("Нужно число 1–10.", reply_markup=create_booking_people_keyboard())
+        await message.answer("Введите число от 1 до 10.", reply_markup=create_booking_people_keyboard())
         return
 
     await state.update_data(booking_people=people)
     await state.set_state(BookingStates.waiting_for_comment)
-    await message.answer("Комментарий (или <code>-</code>):", reply_markup=create_booking_cancel_keyboard())
+    await message.answer("Комментарий (по желанию) или «-».", reply_markup=create_booking_cancel_keyboard())
 
 
 @router.message(StateFilter(BookingStates.waiting_for_comment))
 async def booking_finish(message: Message, state: FSMContext):
     if message.text == BTN_CANCEL:
         await state.clear()
-        await message.answer("Ок, отменил.", reply_markup=create_main_keyboard())
+        await message.answer("Ок, бронирование отменено.", reply_markup=create_main_keyboard())
         return
 
     data = await state.get_data()
-    dt_str = str(data.get("booking_dt") or "—")
+    dt_str = str(data.get("booking_dt") or "")
     people = int(data.get("booking_people") or 0)
     comment = (message.text or "").strip() or "-"
-    booking_id = str(int(time.time()))[-6:]
 
+    booking_id = str(int(time.time()))[-6:]
     user_id = message.from_user.id
-    await message.answer("✅ Заявка на бронь принята!", reply_markup=create_main_keyboard())
+
+    await message.answer("✅ Бронь отправлена админу.", reply_markup=create_main_keyboard())
 
     admin_msg = (
-        f"📋 <b>НОВАЯ БРОНЬ #{booking_id}</b> | {html.quote(CAFE_NAME)}\n\n"
+        f"📅 <b>НОВАЯ БРОНЬ #{booking_id}</b> | {html.quote(CAFE_NAME)}\n\n"
         f"<a href=\"tg://user?id={user_id}\">{html.quote(message.from_user.username or message.from_user.first_name or 'Клиент')}</a>\n"
         f"<code>{user_id}</code>\n\n"
-        f"🗓 {html.quote(dt_str)}\n👥 {people} чел.\n💬 {html.quote(comment)}"
+        f"🕐 Время: <b>{html.quote(dt_str)}</b>\n"
+        f"👥 Гостей: <b>{people}</b>\n"
+        f"💬 Комментарий: {html.quote(comment)}"
     )
 
     await send_admin_only(message.bot, admin_msg)
@@ -1242,24 +1249,9 @@ async def booking_finish(message: Message, state: FSMContext):
     await state.clear()
 
 
-# ---------------- Fallback: drink pick ----------------
-@router.message(F.text)
-async def any_text(message: Message, state: FSMContext):
-    text = (message.text or "").strip()
-
-    if text in MENU:
-        if not is_cafe_open():
-            await message.answer(get_closed_message(), reply_markup=create_main_keyboard())
-            return
-        await _start_add_item(message, state, text)
-        return
-
-    await message.answer("Нажмите напиток или «🛒 Корзина».", reply_markup=create_main_keyboard())
-
-
-# ---------------- Smart return loop ----------------
-def _promo_code(user_id: int) -> str:
-    return f"CB{user_id % 10000:04d}{int(time.time()) % 10000:04d}"
+# ---------------- Cafebotify subscriptions helpers ----------------
+def _promo_code_for_user(user_id: int) -> str:
+    return f"CB{user_id}{(int(time.time()) // 100000) % 10}"
 
 
 def _in_send_window_msk() -> bool:
@@ -1287,7 +1279,7 @@ async def _get_favorite_drink(user_id: int) -> str:
         return ""
 
 
-async def customer_mark_order(*, user_id: int, first_name: str, username: str, cart: Dict[str, int], total_sum: int):
+async def customer_mark_order(user_id: int, firstname: str, username: str, cart: Dict[str, int], total_sum: int):
     now_ts = int(time.time())
     customer_key = f"{CUSTOMER_KEY_PREFIX}{user_id}"
     drinks_key = f"{CUSTOMER_DRINKS_PREFIX}{user_id}"
@@ -1300,13 +1292,16 @@ async def customer_mark_order(*, user_id: int, first_name: str, username: str, c
         pipe.hsetnx(customer_key, "first_order_ts", now_ts)
         pipe.hsetnx(customer_key, "offers_opt_out", 0)
         pipe.hsetnx(customer_key, "last_trigger_ts", 0)
-        pipe.hset(customer_key, mapping={
-            "first_name": first_name or "",
-            "username": username or "",
-            "last_order_ts": now_ts,
-            "last_order_sum": int(total_sum),
-            "last_drink": last_drink,
-        })
+        pipe.hset(
+            customer_key,
+            mapping={
+                "firstname": firstname or "",
+                "username": username or "",
+                "last_order_ts": now_ts,
+                "last_order_sum": int(total_sum),
+                "last_drink": last_drink,
+            },
+        )
         pipe.hincrby(customer_key, "total_orders", 1)
         pipe.hincrby(customer_key, "total_spent", int(total_sum))
         for drink, qty in cart.items():
@@ -1320,8 +1315,8 @@ async def customer_mark_order(*, user_id: int, first_name: str, username: str, c
 async def smart_return_check_and_send(bot: Bot):
     if not _in_send_window_msk():
         return
-    now_ts = int(time.time())
 
+    now_ts = int(time.time())
     try:
         r = await get_redis_client()
         ids = await r.smembers(CUSTOMERS_SET_KEY)
@@ -1339,35 +1334,35 @@ async def smart_return_check_and_send(bot: Bot):
         except Exception:
             profile = {}
 
-        if not profile or str(profile.get("offers_opt_out", "0")) == "1":
+        if not profile or str(profile.get("offers_opt_out", 0)) == "1":
             continue
 
         try:
-            last_order_ts = int(float(profile.get("last_order_ts", "0") or 0))
+            last_order_ts = int(float(profile.get("last_order_ts", 0) or 0))
         except Exception:
             continue
 
-        days_since = (now_ts - last_order_ts) // 86400
+        days_since = (now_ts - last_order_ts) / 86400
         if days_since < RETURN_CYCLE_DAYS:
             continue
 
         try:
-            last_trigger_ts = int(float(profile.get("last_trigger_ts", "0") or 0))
+            last_trigger_ts = int(float(profile.get("last_trigger_ts", 0) or 0))
         except Exception:
             last_trigger_ts = 0
 
-        if last_trigger_ts and (now_ts - last_trigger_ts) < (RETURN_COOLDOWN_DAYS * 86400):
+        if last_trigger_ts and (now_ts - last_trigger_ts) < RETURN_COOLDOWN_DAYS * 86400:
             continue
 
-        first_name = profile.get("first_name") or "друг"
-        favorite = await _get_favorite_drink(user_id) or profile.get("last_drink") or "напиток"
-        promo = _promo_code(user_id)
-
+        firstname = profile.get("firstname") or ""
+        favorite = await _get_favorite_drink(user_id) or profile.get("last_drink") or ""
+        promo = _promo_code_for_user(user_id)
         text = (
-            f"{html.quote(str(first_name))}, давно не виделись ☕\n\n"
-            f"Ваш любимый <b>{html.quote(str(favorite))}</b> сегодня со скидкой <b>{RETURN_DISCOUNT_PERCENT}%</b>.\n"
-            f"Промокод: <code>{promo}</code>\n\n"
-            "Сделаем заказ? Нажмите /start."
+            f"{html.escape(str(firstname) or 'Друзья')},\n\n"
+            f"Скучаете по <b>{html.quote(str(favorite))}</b>? "
+            f"Дарим <b>{RETURN_DISCOUNT_PERCENT}% скидку</b> на него по промокоду:\n\n"
+            f"<code>{promo}</code>\n\n"
+            "Покажите этот код при заказе. Ждём вас!"
         )
 
         try:
@@ -1396,10 +1391,9 @@ async def smart_return_loop(bot: Bot):
         await asyncio.sleep(RETURN_CHECK_EVERY_SECONDS)
 
 
-# ---------------- Подписки Cafebotify: напоминания ----------------
+# ---------------- Subscriptions loop: remind & block ----------------
 async def subs_check_and_notify(bot: Bot):
     now_ts = int(time.time())
-    # простая схема: ищем все ключи user:* и смотрим поля подписки
     try:
         r = await get_redis_client()
         keys = await r.keys("user:*")
@@ -1415,18 +1409,13 @@ async def subs_check_and_notify(bot: Bot):
         except Exception:
             continue
 
-        if not data or data.get("cafebotify_paid") != "1":
-            continue
-
         try:
-            valid_until = int(data.get("cafebotify_valid_until") or 0)
+            paid_flag = int(data.get("cafebotify_paid", 0))
+            valid_until = int(data.get("cafebotify_valid_until", 0))
         except Exception:
             continue
-        if not valid_until:
-            continue
 
-        days_left = (valid_until - now_ts) // 86400
-        if days_left != SUBS_REMIND_DAYS_BEFORE:
+        if not valid_until:
             continue
 
         user_id_str = key.split("user:")[-1]
@@ -1435,24 +1424,38 @@ async def subs_check_and_notify(bot: Bot):
         except Exception:
             continue
 
-        product = data.get("cafebotify_product", "cafebotify_start_month")
-        if product == "cafebotify_start_year":
-            tariff_name = "годовая подписка CafebotifySTART"
-        else:
-            tariff_name = "месячная подписка CafebotifySTART"
+        days_left = (valid_until - now_ts) / 86400
 
-        pay_url = f"{PAY_LANDING_URL}?tg_id={user_id}&plan={'year' if product == 'cafebotify_start_year' else 'month'}"
+        # напоминание
+        if SUBS_REMIND_DAYS_BEFORE - 0.5 <= days_left <= SUBS_REMIND_DAYS_BEFORE + 0.5:
+            pay_url = f"{PAY_LANDING_URL}?tg_id={user_id}&plan=month"
+            try:
+                await bot.send_message(
+                    user_id,
+                    "⏰ <b>Скоро заканчивается доступ к CafebotifySTART</b>\n\n"
+                    f"Осталось примерно {int(days_left)} дней.\n"
+                    f"Продлите по ссылке:\n<a href=\"{html.quote(pay_url)}\">Оплатить ещё месяц</a>",
+                    disable_web_page_preview=True,
+                )
+            except Exception:
+                pass
 
-        text = (
-            f"⚠️ {html.quote(tariff_name)} скоро закончится.\n\n"
-            f"Осталось {days_left} дн.\n\n"
-            f"Чтобы продлить, перейдите по ссылке:\n<a href=\"{html.quote(pay_url)}\">Продлить подписку</a>"
-        )
-
-        try:
-            await bot.send_message(user_id, text, disable_web_page_preview=True)
-        except Exception as e:
-            logger.error(f"subs_notify to {user_id} error: {e}")
+        # блокировка (можно добавить флаг в Redis и проверять его в боте)
+        if days_left < 0 and paid_flag == 1:
+            try:
+                r = await get_redis_client()
+                await r.hset(key, mapping={"cafebotify_paid": "0"})
+                await r.aclose()
+            except Exception:
+                pass
+            try:
+                await bot.send_message(
+                    user_id,
+                    "🔒 Срок действия CafebotifySTART закончился.\n\n"
+                    "Оплатите продление, чтобы снова пользоваться ботом.",
+                )
+            except Exception:
+                pass
 
 
 async def subs_loop(bot: Bot):
@@ -1464,22 +1467,22 @@ async def subs_loop(bot: Bot):
         await asyncio.sleep(SUBS_CHECK_EVERY_SECONDS)
 
 
-# ---------------- ЮKassa: функции и HTTP-ручки ----------------
+# ---------------- ЮKassa HTTP ----------------
 async def create_payment(amount: str, description: str, metadata: dict) -> str:
-    if not (YOOKASSA_SHOP_ID and YOOKASSA_SECRET_KEY):
+    if not YOOKASSA_SHOP_ID and YOOKASSA_SECRET_KEY:
         raise web.HTTPInternalServerError(text="Yookassa credentials not set")
+
     url = "https://api.yookassa.ru/v3/payments"
     idem_key = str(uuid.uuid4())
+
     payload = {
         "amount": {"value": amount, "currency": "RUB"},
         "capture": True,
-        "confirmation": {
-            "type": "redirect",
-            "return_url": RETURN_URL,
-        },
+        "confirmation": {"type": "redirect", "return_url": RETURN_URL},
         "description": description,
         "metadata": metadata,
     }
+
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             url,
@@ -1488,36 +1491,37 @@ async def create_payment(amount: str, description: str, metadata: dict) -> str:
             headers={"Idempotence-Key": idem_key},
             timeout=10,
         )
-    if resp.status_code not in (200, 201):
-        logger.error(f"Yookassa error: {resp.status_code} {resp.text}")
-        raise web.HTTPInternalServerError(text="Yookassa error")
-    data = resp.json()
-    return data["confirmation"]["confirmation_url"]
+        if resp.status_code not in (200, 201):
+            logger.error(f"Yookassa error {resp.status_code} {resp.text}")
+            raise web.HTTPInternalServerError(text="Yookassa error")
+
+        data = resp.json()
+        confirmation = data["confirmation"]["confirmation_url"]
+        return confirmation
 
 
 async def pay_handler(request: web.Request):
-    tg_id = request.query.get("tg_id")
-    plan = request.query.get("plan", "month")  # "month" или "year"
-
-    tg_id_int: Optional[int] = None
-    if tg_id is not None:
+    tgid = request.query.get("tg_id") or request.query.get("tgid")
+    tgid_int: Optional[int] = None
+    if tgid is not None:
         try:
-            tg_id_int = int(tg_id)
+            tgid_int = int(tgid)
         except ValueError:
-            tg_id_int = None
+            tgid_int = None
 
+    plan = request.query.get("plan", "month")
     if plan == "year":
-        amount = os.getenv("CAFEBOTIFY_PRICE_YEAR", "11880.00")
-        description = "Годовая подписка CafebotifySTART"
+        amount = os.getenv("CAFEBOTIFY_PRICE_YEAR", "4900.00")
         product = "cafebotify_start_year"
     else:
-        amount = os.getenv("CAFEBOTIFY_PRICE", "990.00")
-        description = "Месячная подписка CafebotifySTART"
+        amount = os.getenv("CAFEBOTIFY_PRICE", "490.00")
         product = "cafebotify_start_month"
 
+    description = "CafebotifySTART"
+
     metadata = {"product": product}
-    if tg_id_int is not None:
-        metadata["telegram_user_id"] = tg_id_int
+    if tgid_int is not None:
+        metadata["telegram_user_id"] = tgid_int
 
     confirmation_url = await create_payment(amount, description, metadata)
     raise web.HTTPFound(confirmation_url)
@@ -1527,57 +1531,227 @@ async def yookassa_webhook(request: web.Request):
     data = await request.json()
     event = data.get("event")
     obj = data.get("object", {})
-
     if event != "payment.succeeded":
         return web.json_response({"status": "ignored"})
 
     metadata = obj.get("metadata", {})
-    tg_id = metadata.get("telegram_user_id")
-    if not tg_id:
-        return web.json_response({"status": "no_tg_id"})
+    tgid = metadata.get("telegram_user_id")
+    if not tgid:
+        return web.json_response({"status": "notgid"})
 
     try:
-        tg_id_int = int(tg_id)
+        tgid_int = int(tgid)
     except (TypeError, ValueError):
-        return web.json_response({"status": "bad_tg_id"})
+        return web.json_response({"status": "badtgid"})
 
-    product = metadata.get("product", "cafebotify_start_month")
+    now_ts = int(time.time())
+    product = metadata.get("product") or "cafebotify_start_month"
     if product == "cafebotify_start_year":
         period_days = 360
     else:
         period_days = 30
 
-    now_ts = int(time.time())
     valid_until = now_ts + period_days * 86400
 
     try:
         r = await get_redis_client()
-        await r.hset(f"user:{tg_id_int}", mapping={
-            "cafebotify_paid": "1",
-            "cafebotify_paid_at": str(now_ts),
-            "cafebotify_valid_until": str(valid_until),
-            "cafebotify_product": product,
-        })
+        await r.hset(
+            f"user:{tgid_int}",
+            mapping={
+                "cafebotify_paid": "1",
+                "cafebotify_paid_at": str(now_ts),
+                "cafebotify_valid_until": str(valid_until),
+                "cafebotify_product": product,
+            },
+        )
         await r.aclose()
     except Exception as e:
         logger.error(f"yookassa_webhook redis error: {e}")
-        return web.json_response({"status": "redis_error"})
+        return web.json_response({"status": "rediserror"})
 
     return web.json_response({"status": "ok"})
 
 
-# ---------------- Startup/Webhook ----------------
-_smart_task: Optional[asyncio.Task] = None
-_subs_task: Optional[asyncio.Task] = None
+# ---------------- Команды суперадмина: профиль и оплата ----------------
+def _parse_kv_payload(text: str) -> Dict[str, str]:
+    """
+    /set_profile name=Кафе; phone=+7...; address=...; work_start=9; work_end=21
+    """
+    payload = text.split(maxsplit=1)
+    if len(payload) == 1:
+        body = ""
+    else:
+        body = payload[1]
+    result: Dict[str, str] = {}
+    for part in body.split(";"):
+        part = part.strip()
+        if not part:
+            continue
+        if "=" not in part:
+            continue
+        k, v = part.split("=", 1)
+        k = k.strip().lower()
+        v = v.strip()
+        if not k or not v:
+            continue
+        result[k] = v
+    return result
 
 
-async def on_startup(bot: Bot) -> None:
-    global _smart_task, _subs_task
+@router.message(Command("set_profile"))
+async def set_profile_cmd(message: Message):
+    if message.from_user.id != SUPERADMIN_ID:
+        return
+
+    params = _parse_kv_payload(message.text or "")
+    if not params:
+        await message.answer(
+            "Формат:\n"
+            "/set_profile name=Кофейня; phone=+7...; address=город, улица; work_start=9; work_end=21"
+        )
+        return
+
+    global CAFE_NAME, CAFE_PHONE, CAFE_ADDRESS, WORK_START, WORK_END
+
+    changes = []
+
+    if "name" in params:
+        CAFE_NAME = params["name"]
+        changes.append(f"name → <code>{html.quote(CAFE_NAME)}</code>")
+
+    if "phone" in params:
+        CAFE_PHONE = params["phone"]
+        changes.append(f"phone → <code>{html.quote(CAFE_PHONE)}</code>")
+
+    if "address" in params:
+        CAFE_ADDRESS = params["address"]
+        changes.append(f"address → <code>{html.quote(CAFE_ADDRESS)}</code>")
+
+    if "work_start" in params:
+        try:
+            WORK_START = int(params["work_start"])
+            changes.append(f"work_start → <code>{WORK_START}</code>")
+        except Exception:
+            pass
+
+    if "work_end" in params:
+        try:
+            WORK_END = int(params["work_end"])
+            changes.append(f"work_end → <code>{WORK_END}</code>")
+        except Exception:
+            pass
+
+    # сохранить в config.json, чтобы переживало рестарт
+    try:
+        with open("config.json", "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        data = {}
+
+    cafe = data.get("cafe", {})
+    cafe["name"] = CAFE_NAME
+    cafe["phone"] = CAFE_PHONE
+    cafe["address"] = CAFE_ADDRESS
+    cafe["work_start"] = WORK_START
+    cafe["work_end"] = WORK_END
+    data["cafe"] = cafe
+
+    try:
+        with open("config.json", "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        await message.answer(f"⚠️ Профиль обновлён в памяти, но не удалось сохранить config.json: {e}")
+    else:
+        await message.answer(
+            "✅ Профиль обновлён:\n" + ("\n".join(changes) if changes else "Изменений нет.")
+        )
+
+
+@router.message(Command("set_paid"))
+async def set_paid_cmd(message: Message):
+    if message.from_user.id != SUPERADMIN_ID:
+        return
+
+    parts = (message.text or "").split()
+    if len(parts) < 3:
+        await message.answer(
+            "Формат: /set_paid <tg_id> <YYYY-MM-DD> [month|year]\n"
+            "Пример: /set_paid 1471275603 2026-05-01 month"
+        )
+        return
+
+    tg_id_str, date_str = parts[1], parts[2]
+    plan = parts[3] if len(parts) >= 4 else "month"
+
+    try:
+        tg_id_int = int(tg_id_str)
+    except Exception:
+        await message.answer("tg_id должен быть числом.")
+        return
+
+    try:
+        dt = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=MSK_TZ)
+        base_ts = int(dt.timestamp())
+    except Exception:
+        await message.answer("Дата в формате YYYY-MM-DD.")
+        return
+
+    if plan == "year":
+        product = "cafebotify_start_year"
+        period_days = 360
+    else:
+        product = "cafebotify_start_month"
+        period_days = 30
+
+    valid_until = base_ts + period_days * 86400
+
+    try:
+        r = await get_redis_client()
+        await r.hset(
+            f"user:{tg_id_int}",
+            mapping={
+                "cafebotify_paid": "1",
+                "cafebotify_paid_at": str(int(time.time())),
+                "cafebotify_valid_until": str(valid_until),
+                "cafebotify_product": product,
+            },
+        )
+        await r.aclose()
+    except Exception as e:
+        await message.answer(f"Redis error: {e}")
+        return
+
+    await message.answer(
+        f"✅ Подписка для <code>{tg_id_int}</code> выставлена до {date_str} ({plan})."
+    )
+
+
+# ---------------- Fallback drink pick ----------------
+@router.message(F.text)
+async def any_text_message(message: Message, state: FSMContext):
+    text = (message.text or "").strip()
+    if text in MENU:
+        if not is_cafe_open():
+            await message.answer(get_closed_message(), reply_markup=create_main_keyboard())
+            return
+        await _start_add_item(message, state, text)
+        return
+
+    await message.answer("Не понял. Используйте кнопки меню.", reply_markup=create_main_keyboard())
+
+
+# ---------------- Startup / webhook ----------------
+smart_task: Optional[asyncio.Task] = None
+subs_task: Optional[asyncio.Task] = None
+
+
+async def on_startup_bot(bot: Bot):
+    global smart_task, subs_task
     await sync_menu_from_redis()
-    if _smart_task is None or _smart_task.done():
-        _smart_task = asyncio.create_task(smart_return_loop(bot))
-    if _subs_task is None or _subs_task.done():
-        _subs_task = asyncio.create_task(subs_loop(bot))
+    if smart_task is None or smart_task.done():
+        smart_task = asyncio.create_task(smart_return_loop(bot))
+    if subs_task is None or subs_task.done():
+        subs_task = asyncio.create_task(subs_loop(bot))
 
     try:
         await bot.set_webhook(WEBHOOK_URL, secret_token=WEBHOOK_SECRET)
@@ -1597,7 +1771,7 @@ async def main():
     storage = RedisStorage.from_url(REDIS_URL)
     dp = Dispatcher(storage=storage)
     dp.include_router(router)
-    dp.startup.register(on_startup)
+    dp.startup.register(on_startup_bot)
 
     app = web.Application()
 
@@ -1605,6 +1779,7 @@ async def main():
         return web.json_response({"status": "healthy"})
 
     app.router.add_get("/", healthcheck)
+    app.router.add_get("/healthcheck", healthcheck)
     app.router.add_get("/pay", pay_handler)
     app.router.add_post("/yookassa/webhook", yookassa_webhook)
 
@@ -1617,16 +1792,16 @@ async def main():
 
     setup_application(app, dp, bot=bot)
 
-    async def _on_shutdown(a: web.Application):
-        global _smart_task, _subs_task
+    async def on_shutdown(a: web.Application):
+        global smart_task, subs_task
         try:
-            if _smart_task and not _smart_task.done():
-                _smart_task.cancel()
+            if smart_task and not smart_task.done():
+                smart_task.cancel()
         except Exception:
             pass
         try:
-            if _subs_task and not _subs_task.done():
-                _subs_task.cancel()
+            if subs_task and not subs_task.done():
+                subs_task.cancel()
         except Exception:
             pass
         try:
@@ -1642,13 +1817,14 @@ async def main():
         except Exception:
             pass
 
-    app.on_shutdown.append(_on_shutdown)
+    app.on_shutdown.append(on_shutdown)
 
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
 
+    logger.info("Bot started on 0.0.0.0:%s", PORT)
     await asyncio.Event().wait()
 
 
