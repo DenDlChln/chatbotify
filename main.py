@@ -644,6 +644,19 @@ async def cmd_start(message: Message, state: FSMContext):
     )
 
 
+@router.message(Command("myid"))
+async def myid_cmd(message: Message):
+    user_id = message.from_user.id
+    username = message.from_user.username or ""
+    await message.answer(
+        "🆔 <b>Ваш Telegram ID</b>\n\n"
+        f"<code>{user_id}</code>\n\n"
+        "Скопируйте этот ID и укажите его в форме на лендинге "
+        "в поле «ID администратора (Telegram)»."
+        + (f"\n\n🔗 Username: @{username}" if username else "")
+    )
+
+
 @router.message(F.text == BTN_REPEAT_NO)
 async def repeat_no(message: Message, state: FSMContext):
     await state.update_data(repeat_offer_snapshot=None)
