@@ -1507,11 +1507,11 @@ async def pay_handler(request: web.Request):
             tg_id_int = None
 
     if plan == "year":
-        amount = os.getenv("CAFEBOTIFY_PRICE_YEAR", "4900.00")
+        amount = os.getenv("CAFEBOTIFY_PRICE_YEAR", "11880.00")
         description = "Годовая подписка CafebotifySTART"
         product = "cafebotify_start_year"
     else:
-        amount = os.getenv("CAFEBOTIFY_PRICE", "490.00")
+        amount = os.getenv("CAFEBOTIFY_PRICE", "990.00")
         description = "Месячная подписка CafebotifySTART"
         product = "cafebotify_start_month"
 
@@ -1543,7 +1543,7 @@ async def yookassa_webhook(request: web.Request):
 
     product = metadata.get("product", "cafebotify_start_month")
     if product == "cafebotify_start_year":
-        period_days = 365
+        period_days = 360
     else:
         period_days = 30
 
