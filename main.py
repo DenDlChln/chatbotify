@@ -57,6 +57,10 @@ RETURN_SEND_FROM_HOUR = 10
 RETURN_SEND_TO_HOUR = 20
 RETURN_DISCOUNT_PERCENT = 10
 
+# Подписки Cafebotify
+SUBS_CHECK_EVERY_SECONDS = 24 * 60 * 60  # раз в сутки
+SUBS_REMIND_DAYS_BEFORE = 3
+
 
 def get_moscow_time() -> datetime:
     return datetime.now(MSK_TZ)
@@ -174,6 +178,16 @@ def _last_seen_key(user_id: int) -> str:
 
 def _last_order_key(user_id: int) -> str:
     return f"{LAST_ORDER_KEY_PREFIX}{user_id}"
+
+
+async def is_user_paid(user_id: int) -> bool:
+    try:
+        r = await get_redis_client()
+        val = await r.hget(f"user:{user_id}", "cafebotify_paid")
+        await r.aclose()
+        return val == "1"
+    except Exception:
+        return False
 
 
 # ---------------- States ----------------
@@ -662,7 +676,8 @@ async def repeat_last(message: Message, state: FSMContext):
 @router.message(F.text == BTN_PAY)
 async def pay_button(message: Message):
     user_id = message.from_user.id
-    pay_url = f"{PAY_LANDING_URL}?tg_id={user_id}"
+    # по умолчанию считаем месячный план
+    pay_url = f"{PAY_LANDING_URL}?tg_id={user_id}&plan=month"
     text = (
         "💳 <b>Оплата доступа к CafebotifySTART</b>\n\n"
         "Нажмите на ссылку ниже, чтобы перейти на страницу оплаты.\n"
@@ -1381,143 +1396,72 @@ async def smart_return_loop(bot: Bot):
         await asyncio.sleep(RETURN_CHECK_EVERY_SECONDS)
 
 
-# ---------------- Startup/Webhook ----------------
-def _promo_code(user_id: int) -> str:
-    return f"CB{user_id % 10000:04d}{int(time.time()) % 10000:04d}"
-
-
-def _in_send_window_msk() -> bool:
-    h = get_moscow_time().hour
-    return RETURN_SEND_FROM_HOUR <= h < RETURN_SEND_TO_HOUR
-
-
-async def _get_favorite_drink(user_id: int) -> str:
-    key = f"{CUSTOMER_DRINKS_PREFIX}{user_id}"
-    try:
-        r = await get_redis_client()
-        data = await r.hgetall(key)
-        await r.aclose()
-        best_name, best_cnt = "", -1
-        for k, v in data.items():
-            try:
-                cnt = int(v)
-                if cnt > best_cnt:
-                    best_cnt = cnt
-                    best_name = str(k)
-            except Exception:
-                continue
-        return best_name
-    except Exception:
-        return ""
-
-
-async def customer_mark_order(*, user_id: int, first_name: str, username: str, cart: Dict[str, int], total_sum: int):
+# ---------------- Подписки Cafebotify: напоминания ----------------
+async def subs_check_and_notify(bot: Bot):
     now_ts = int(time.time())
-    customer_key = f"{CUSTOMER_KEY_PREFIX}{user_id}"
-    drinks_key = f"{CUSTOMER_DRINKS_PREFIX}{user_id}"
-    last_drink = next(iter(cart.keys()), "")
-
+    # простая схема: ищем все ключи user:* и смотрим поля подписки
     try:
         r = await get_redis_client()
-        pipe = r.pipeline()
-        pipe.sadd(CUSTOMERS_SET_KEY, user_id)
-        pipe.hsetnx(customer_key, "first_order_ts", now_ts)
-        pipe.hsetnx(customer_key, "offers_opt_out", 0)
-        pipe.hsetnx(customer_key, "last_trigger_ts", 0)
-        pipe.hset(customer_key, mapping={
-            "first_name": first_name or "",
-            "username": username or "",
-            "last_order_ts": now_ts,
-            "last_order_sum": int(total_sum),
-            "last_drink": last_drink,
-        })
-        pipe.hincrby(customer_key, "total_orders", 1)
-        pipe.hincrby(customer_key, "total_spent", int(total_sum))
-        for drink, qty in cart.items():
-            pipe.hincrby(drinks_key, drink, int(qty))
-        await pipe.execute()
+        keys = await r.keys("user:*")
         await r.aclose()
     except Exception:
-        pass
+        keys = []
 
-
-async def smart_return_check_and_send(bot: Bot):
-    if not _in_send_window_msk():
-        return
-    now_ts = int(time.time())
-
-    try:
-        r = await get_redis_client()
-        ids = await r.smembers(CUSTOMERS_SET_KEY)
-        await r.aclose()
-        ids = [int(x) for x in ids]
-    except Exception:
-        ids = []
-
-    for user_id in ids:
-        customer_key = f"{CUSTOMER_KEY_PREFIX}{user_id}"
+    for key in keys:
         try:
             r = await get_redis_client()
-            profile = await r.hgetall(customer_key)
+            data = await r.hgetall(key)
             await r.aclose()
         except Exception:
-            profile = {}
+            continue
 
-        if not profile or str(profile.get("offers_opt_out", "0")) == "1":
+        if not data or data.get("cafebotify_paid") != "1":
             continue
 
         try:
-            last_order_ts = int(float(profile.get("last_order_ts", "0") or 0))
+            valid_until = int(data.get("cafebotify_valid_until") or 0)
         except Exception:
             continue
-
-        days_since = (now_ts - last_order_ts) // 86400
-        if days_since < RETURN_CYCLE_DAYS:
+        if not valid_until:
             continue
 
+        days_left = (valid_until - now_ts) // 86400
+        if days_left != SUBS_REMIND_DAYS_BEFORE:
+            continue
+
+        user_id_str = key.split("user:")[-1]
         try:
-            last_trigger_ts = int(float(profile.get("last_trigger_ts", "0") or 0))
+            user_id = int(user_id_str)
         except Exception:
-            last_trigger_ts = 0
-
-        if last_trigger_ts and (now_ts - last_trigger_ts) < (RETURN_COOLDOWN_DAYS * 86400):
             continue
 
-        first_name = profile.get("first_name") or "друг"
-        favorite = await _get_favorite_drink(user_id) or profile.get("last_drink") or "напиток"
-        promo = _promo_code(user_id)
+        product = data.get("cafebotify_product", "cafebotify_start_month")
+        if product == "cafebotify_start_year":
+            tariff_name = "годовая подписка CafebotifySTART"
+        else:
+            tariff_name = "месячная подписка CafebotifySTART"
+
+        pay_url = f"{PAY_LANDING_URL}?tg_id={user_id}&plan={'year' if product == 'cafebotify_start_year' else 'month'}"
 
         text = (
-            f"{html.quote(str(first_name))}, давно не виделись ☕\n\n"
-            f"Ваш любимый <b>{html.quote(str(favorite))}</b> сегодня со скидкой <b>{RETURN_DISCOUNT_PERCENT}%</b>.\n"
-            f"Промокод: <code>{promo}</code>\n\n"
-            "Сделаем заказ? Нажмите /start."
+            f"⚠️ {html.quote(tariff_name)} скоро закончится.\n\n"
+            f"Осталось {days_left} дн.\n\n"
+            f"Чтобы продлить, перейдите по ссылке:\n<a href=\"{html.quote(pay_url)}\">Продлить подписку</a>"
         )
 
         try:
-            await bot.send_message(user_id, text)
-            try:
-                r = await get_redis_client()
-                await r.hset(customer_key, "last_trigger_ts", str(now_ts))
-                await r.aclose()
-            except Exception:
-                pass
-        except Exception:
-            try:
-                r = await get_redis_client()
-                await r.srem(CUSTOMERS_SET_KEY, user_id)
-                await r.aclose()
-            except Exception:
-                pass
+            await bot.send_message(user_id, text, disable_web_page_preview=True)
+        except Exception as e:
+            logger.error(f"subs_notify to {user_id} error: {e}")
 
 
-async def smart_return_loop(bot: Bot):
+async def subs_loop(bot: Bot):
     while True:
         try:
-            await smart_return_check_and_send(bot)
+            await subs_check_and_notify(bot)
         except Exception as e:
-            logger.error(f"smart_return_loop: {e}")
-        await asyncio.sleep(RETURN_CHECK_EVERY_SECONDS)
+            logger.error(f"subs_loop: {e}")
+        await asyncio.sleep(SUBS_CHECK_EVERY_SECONDS)
 
 
 # ---------------- ЮKassa: функции и HTTP-ручки ----------------
@@ -1553,6 +1497,7 @@ async def create_payment(amount: str, description: str, metadata: dict) -> str:
 
 async def pay_handler(request: web.Request):
     tg_id = request.query.get("tg_id")
+    plan = request.query.get("plan", "month")  # "month" или "year"
 
     tg_id_int: Optional[int] = None
     if tg_id is not None:
@@ -1561,10 +1506,16 @@ async def pay_handler(request: web.Request):
         except ValueError:
             tg_id_int = None
 
-    amount = os.getenv("CAFEBOTIFY_PRICE", "490.00")
-    description = "Подписка CafebotifySTART"
+    if plan == "year":
+        amount = os.getenv("CAFEBOTIFY_PRICE_YEAR", "4900.00")
+        description = "Годовая подписка CafebotifySTART"
+        product = "cafebotify_start_year"
+    else:
+        amount = os.getenv("CAFEBOTIFY_PRICE", "490.00")
+        description = "Месячная подписка CafebotifySTART"
+        product = "cafebotify_start_month"
 
-    metadata = {"product": "cafebotify_start"}
+    metadata = {"product": product}
     if tg_id_int is not None:
         metadata["telegram_user_id"] = tg_id_int
 
@@ -1583,7 +1534,6 @@ async def yookassa_webhook(request: web.Request):
     metadata = obj.get("metadata", {})
     tg_id = metadata.get("telegram_user_id")
     if not tg_id:
-        # платеж без tg_id (с сайта) — для бота ничего не делаем
         return web.json_response({"status": "no_tg_id"})
 
     try:
@@ -1591,12 +1541,22 @@ async def yookassa_webhook(request: web.Request):
     except (TypeError, ValueError):
         return web.json_response({"status": "bad_tg_id"})
 
-    # Активация подписки в Redis
+    product = metadata.get("product", "cafebotify_start_month")
+    if product == "cafebotify_start_year":
+        period_days = 365
+    else:
+        period_days = 30
+
+    now_ts = int(time.time())
+    valid_until = now_ts + period_days * 86400
+
     try:
         r = await get_redis_client()
         await r.hset(f"user:{tg_id_int}", mapping={
             "cafebotify_paid": "1",
-            "cafebotify_paid_at": str(int(time.time())),
+            "cafebotify_paid_at": str(now_ts),
+            "cafebotify_valid_until": str(valid_until),
+            "cafebotify_product": product,
         })
         await r.aclose()
     except Exception as e:
@@ -1608,13 +1568,16 @@ async def yookassa_webhook(request: web.Request):
 
 # ---------------- Startup/Webhook ----------------
 _smart_task: Optional[asyncio.Task] = None
+_subs_task: Optional[asyncio.Task] = None
 
 
 async def on_startup(bot: Bot) -> None:
-    global _smart_task
+    global _smart_task, _subs_task
     await sync_menu_from_redis()
     if _smart_task is None or _smart_task.done():
         _smart_task = asyncio.create_task(smart_return_loop(bot))
+    if _subs_task is None or _subs_task.done():
+        _subs_task = asyncio.create_task(subs_loop(bot))
 
     try:
         await bot.set_webhook(WEBHOOK_URL, secret_token=WEBHOOK_SECRET)
@@ -1655,10 +1618,15 @@ async def main():
     setup_application(app, dp, bot=bot)
 
     async def _on_shutdown(a: web.Application):
-        global _smart_task
+        global _smart_task, _subs_task
         try:
             if _smart_task and not _smart_task.done():
                 _smart_task.cancel()
+        except Exception:
+            pass
+        try:
+            if _subs_task and not _subs_task.done():
+                _subs_task.cancel()
         except Exception:
             pass
         try:
