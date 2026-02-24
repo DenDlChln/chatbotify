@@ -1629,6 +1629,30 @@ async def yookassa_webhook(request: web.Request):
         logger.error(f"yookassa_webhook redis error: {e}")
         return web.json_response({"status": "rediserror"})
 
+    # уведомление администратору и пользователю
+    try:
+        bot: Bot = request.app["bot"]
+        valid_until_dt = datetime.fromtimestamp(valid_until, tz=MSK_TZ).strftime("%d.%m.%Y")
+        tariff_title = "360 дней" if product == "cafebotify_start_year" else "30 дней"
+
+        # админу
+        await bot.send_message(
+            ADMIN_ID,
+            "💳 <b>Новая оплата CafebotifySTART</b>\n\n"
+            f"Пользователь: <code>{tgid_int}</code>\n"
+            f"Тариф: <b>{tariff_title}</b>\n"
+            f"Подписка до: <b>{valid_until_dt}</b>",
+        )
+
+        # пользователю
+        await bot.send_message(
+            tgid_int,
+            "✅ Оплата получена. Доступ к CafebotifySTART активирован.\n"
+            f"Срок действия до: <b>{valid_until_dt}</b>.",
+        )
+    except Exception as e:
+        logger.error(f"yookassa_webhook notify error: {e}")
+
     return web.json_response({"status": "ok"})
 
 
@@ -1838,7 +1862,8 @@ async def main():
     dp.startup.register(on_startup_bot)
 
     app = web.Application()
-
+    app["bot"] = bot
+    
     async def healthcheck(request: web.Request):
         return web.json_response({"status": "healthy"})
 
