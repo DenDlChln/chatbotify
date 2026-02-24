@@ -462,7 +462,8 @@ def create_main_keyboard() -> ReplyKeyboardMarkup:
         kb.append([KeyboardButton(text=drink)])
     kb.append([KeyboardButton(text=BTN_CART), KeyboardButton(text=BTN_CHECKOUT), KeyboardButton(text=BTN_BOOKING)])
     kb.append([KeyboardButton(text=BTN_STATS), KeyboardButton(text=BTN_CALL), KeyboardButton(text=BTN_HOURS)])
-    kb.append([KeyboardButton(text=BTN_MENU_EDIT), KeyboardButton(text=BTN_PAY)])
+    kb.append([KeyboardButton(text=BTN_MENU_EDIT)])
+    kb.append([KeyboardButton(text=BTN_PAY_MONTH), KeyboardButton(text=BTN_PAY_YEAR)])
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True, is_persistent=True)
 
 
@@ -477,7 +478,7 @@ def create_cart_keyboard(cart_has_items: bool) -> ReplyKeyboardMarkup:
         kb.append([KeyboardButton(text=drink)])
     kb.append([KeyboardButton(text=BTN_BOOKING), KeyboardButton(text=BTN_STATS)])
     kb.append([KeyboardButton(text=BTN_CALL), KeyboardButton(text=BTN_HOURS), KeyboardButton(text=BTN_MENU_EDIT)])
-    kb.append([KeyboardButton(text=BTN_PAY)])
+    kb.append([KeyboardButton(text=BTN_PAY_MONTH), KeyboardButton(text=BTN_PAY_YEAR)])
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True, is_persistent=True)
 
 
