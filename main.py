@@ -1596,8 +1596,13 @@ async def yookassa_webhook(request: web.Request):
 
     metadata = obj.get("metadata", {})
     tgid = metadata.get("telegram_user_id")
+
+    # логируем, что пришло от ЮKassa
+    logger.info(f"Yookassa webhook: raw_tgid={tgid}, metadata={metadata}")
+
     if not tgid:
         return web.json_response({"status": "notgid"})
+
 
     try:
         tgid_int = int(tgid)
