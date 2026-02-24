@@ -1629,7 +1629,7 @@ async def yookassa_webhook(request: web.Request):
         logger.error(f"yookassa_webhook redis error: {e}")
         return web.json_response({"status": "rediserror"})
 
-    # уведомление администратору и пользователю
+        # уведомление администратору и пользователю
     try:
         bot: Bot = request.app["bot"]
         valid_until_dt = datetime.fromtimestamp(valid_until, tz=MSK_TZ).strftime("%d.%m.%Y")
@@ -1654,6 +1654,7 @@ async def yookassa_webhook(request: web.Request):
         logger.error(f"yookassa_webhook notify error: {e}")
 
     return web.json_response({"status": "ok"})
+
 
 
 # ---------------- Команды суперадмина: профиль и оплата ----------------
