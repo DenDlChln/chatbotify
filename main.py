@@ -1663,7 +1663,7 @@ async def yookassa_webhook(request: web.Request):
         await bot.send_message(tgid_int, user_text)
 
         # DEMO: показать пользователю "как это увидит админ"
-        await send_admin_demo_to_user(bot, tgid_int, admin_text)
+        # await send_admin_demo_to_user(bot, tgid_int, admin_text)
 
     except Exception as e:
         logger.error(f"yookassa_webhook notify error: {e}")
