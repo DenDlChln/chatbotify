@@ -1623,7 +1623,7 @@ async def yookassa_webhook(request: web.Request):
     else:
         period_days = 30
 
-            add_seconds = period_days * 86400
+        add_seconds = period_days * 86400
 
     try:
         r = await get_redis_client()
