@@ -1656,10 +1656,11 @@ async def yookassa_webhook(request: web.Request):
         logger.error(f"yookassa_webhook redis error: {e}")
         return web.json_response({"status": "rediserror"})
 
-
-    # уведомления: админу + пользователю + DEMO (как увидит админ)
+    # уведомления: админу (DEMO-ботом) + пользователю (основным ботом)
     try:
-        bot: Bot = request.app["bot"]
+        demo_bot: Bot = request.app["bot"]  # это BOTTOKEN демо-сервиса
+        client_token = (os.getenv("CLIENT_BOT_TOKEN") or "").strip()
+
         valid_until_dt = datetime.fromtimestamp(valid_until, tz=MSK_TZ).strftime("%d.%m.%Y")
         tariff_title = "360 дней" if product == "cafebotify_start_year" else "30 дней"
 
@@ -1675,14 +1676,33 @@ async def yookassa_webhook(request: web.Request):
             f"Срок действия до: <b>{valid_until_dt}</b>."
         )
 
-        await bot.send_message(ADMIN_ID, admin_text)
-        await bot.send_message(tgid_int, user_text)
+        # 1) Админу — как и раньше, от DEMO-бота
+        await demo_bot.send_message(ADMIN_ID, admin_text)
+
+        # 2) Пользователю — от основного (клиентского) бота
+        if not client_token:
+            logger.error(
+                "CLIENT_BOT_TOKEN not set: cannot notify user tgid=%s payment_id=%s",
+                tgid_int, payment_id
+            )
+        else:
+            client_bot = Bot(
+                token=client_token,
+                default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+            )
+            try:
+                await client_bot.send_message(tgid_int, user_text)
+            finally:
+                await client_bot.session.close()
 
         # DEMO: показать пользователю "как это увидит админ"
-        # await send_admin_demo_to_user(bot, tgid_int, admin_text)
+        # await send_admin_demo_to_user(demo_bot, tgid_int, admin_text)
 
-    except Exception as e:
-        logger.error(f"yookassa_webhook notify error: {e}")
+    except Exception:
+        logger.exception(
+            "yookassa_webhook notify error payment_id=%s tgid=%s",
+            payment_id, tgid
+        )
 
     return web.json_response({"status": "ok"})
 
