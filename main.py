@@ -2197,10 +2197,32 @@ async def main():
 if __name__ == "__main__":
     asyncio.run(main())
 
-# Добавь в конец main.py
-async def clear_subs():
+async def clear_all_drafts_and_subs():
     r = await get_redis_client()
-    keys = await r.keys("cafe:*:admin_subscription")
-    if keys: await r.delete(*keys)
-    print(f"🗑️ Очищено {len(keys)} подписок")
+    
+    # 1. Drafts оплат (из твоего кода)
+    draft_keys = await r.keys("paydraft:*")
+    print(f"Drafts: {draft_keys}")
+    
+    # 2. Customer ключи
+    customer_keys = await r.keys("customer:*")
+    print(f"Customers: {customer_keys}")
+    
+    # 3. Smart return
+    return_keys = await r.keys("customers:set")
+    print(f"Returns: {return_keys}")
+    
+    # 4. ВСЕ cafe:* (если есть)
+    cafe_keys = await r.keys("cafe:*")
+    print(f"Cafe: {cafe_keys}")
+    
+    # Удаляем ВСЁ найденное
+    all_to_delete = draft_keys + customer_keys + return_keys + cafe_keys
+    if all_to_delete:
+        deleted_count = await r.delete(*all_to_delete)
+        print(f"🗑️ УДАЛЕНО: {deleted_count} ключей!")
+    else:
+        print("❌ Ничего не найдено")
+    
+    await r.aclose()
 
