@@ -2196,3 +2196,11 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+# Добавь в конец main.py
+async def clear_subs():
+    r = await get_redis_client()
+    keys = await r.keys("cafe:*:admin_subscription")
+    if keys: await r.delete(*keys)
+    print(f"🗑️ Очищено {len(keys)} подписок")
+
