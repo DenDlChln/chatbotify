@@ -1737,19 +1737,22 @@ async def yookassa_webhook(request: web.Request):
     metadata = obj.get("metadata", {})
     tgid = metadata.get("telegram_user_id")
 
-    # ✅ НОВОЕ: cafe_id из metadata (продление) ИЛИ из Redis (первый платёж)
-    cafe_id = metadata.get("cafe_id")
+    # ✅ НОВОЕ: cafe_id из metadata (продление) ИЛИ из Redis (первый платёж) ИЛИ DEFAULT
+    cafe_id = metadata.get("cafe_id")  # Продление из основного бота
     if not cafe_id:
-        # Первый платёж — ищем текущее кафе админа
+    # Первый платёж — ищем текущее кафе админа
         try:
             r = await get_redis_client()
-            cafe_id = await r.get(f"user:{tgid}:cafe_id") or DEFAULT_CAFE_ID
+            cafe_id = await r.get(f"user:{tgid}:cafe_id")  # был ли в основном боте
+            if not cafe_id:
+                cafe_id = DEFAULT_CAFE_ID  # дефолтное кафе из config
             await r.aclose()
         except Exception:
-            logger.error("Cannot get cafe_id from Redis for first payment")
-            return web.json_response({"status": "no_cafe_id"})
+        # Запасной вариант — всегда есть cafe_001
+            logger.warning(f"Redis недоступен для tgid={tgid}, используем DEFAULT_CAFE_ID")
+            cafe_id = DEFAULT_CAFE_ID
 
-    # логируем с cafe_id
+# логируем с cafe_id
     payment_id = obj.get("id")
     amount = obj.get("amount", {})
     amount_value = amount.get("value") if isinstance(amount, dict) else None
@@ -1761,8 +1764,9 @@ async def yookassa_webhook(request: web.Request):
         payment_id, cafe_id, payment_status, amount_value, amount_currency, tgid, metadata
     )
 
-    if not tgid or not cafe_id:
-        return web.json_response({"status": "missing_data"})
+if not tgid or not cafe_id:
+    logger.error(f"Missing tgid={tgid} or cafe_id={cafe_id}")
+    return web.json_response({"status": "missing_data"})
 
     try:
         tgid_int = int(tgid)
