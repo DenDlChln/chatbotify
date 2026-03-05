@@ -1822,7 +1822,7 @@ async def yookassa_webhook(request: web.Request):
         tariff_title = "360 дней" if product == "cafebotify_start_year" else "30 дней"
 
         # Добавляем cafe_id в уведомления
-        cafe_title_text = cafe_title(CAFES.get(cafe_id, {})) if cafe_id in CAFES else cafe_id
+        cafe_title_text = cafe_id
 
         admin_text = (
             "💳 <b>Новая оплата CafebotifySTART</b>\n\n"
