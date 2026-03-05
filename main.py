@@ -1830,7 +1830,7 @@ async def yookassa_webhook(request: web.Request):
 
         # ВАЖНО: сохраняем в Redis только идентификаторы (без текста),
         # чтобы хвост cafe_code можно было менять вручную до нажатия "✅ Отправить"
-        r = await getredisclient()
+        r = await get_redis_client()
         payload = {
             "tgid": tgid_int,
             "status": "pending",
