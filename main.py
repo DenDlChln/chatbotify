@@ -1737,7 +1737,19 @@ async def yookassa_webhook(request: web.Request):
     metadata = obj.get("metadata", {})
     tgid = metadata.get("telegram_user_id")
 
-    # логируем, что пришло от ЮKassa + id платежа и сумму
+    # ✅ НОВОЕ: cafe_id из metadata (продление) ИЛИ из Redis (первый платёж)
+    cafe_id = metadata.get("cafe_id")
+    if not cafe_id:
+        # Первый платёж — ищем текущее кафе админа
+        try:
+            r = await get_redis_client()
+            cafe_id = await r.get(f"user:{tgid}:cafe_id") or DEFAULT_CAFE_ID
+            await r.aclose()
+        except Exception:
+            logger.error("Cannot get cafe_id from Redis for first payment")
+            return web.json_response({"status": "no_cafe_id"})
+
+    # логируем с cafe_id
     payment_id = obj.get("id")
     amount = obj.get("amount", {})
     amount_value = amount.get("value") if isinstance(amount, dict) else None
@@ -1745,12 +1757,12 @@ async def yookassa_webhook(request: web.Request):
     payment_status = obj.get("status")
 
     logger.info(
-        "Yookassa webhook: payment_id=%s status=%s amount=%s %s raw_tgid=%s metadata=%s",
-        payment_id, payment_status, amount_value, amount_currency, tgid, metadata
+        "Yookassa webhook: payment_id=%s cafe_id=%s status=%s amount=%s %s raw_tgid=%s metadata=%s",
+        payment_id, cafe_id, payment_status, amount_value, amount_currency, tgid, metadata
     )
 
-    if not tgid:
-        return web.json_response({"status": "notgid"})
+    if not tgid or not cafe_id:
+        return web.json_response({"status": "missing_data"})
 
     try:
         tgid_int = int(tgid)
@@ -1769,25 +1781,29 @@ async def yookassa_webhook(request: web.Request):
     try:
         r = await get_redis_client()
 
-        # 1) прочитать текущую дату окончания
-        cur_s = await r.hget(f"user:{tgid_int}", "cafebotify_valid_until")
+        # ✅ НОВЫЙ КЛЮЧ: cafe:{cafe_id}:admin_subscription
+        sub_key = f"cafe:{cafe_id}:admin_subscription"
+        
+        # читаем ТЕКУЩУЮ подписку ЭТОГО КАФЕ
+        cur_s = await r.hget(sub_key, "cafebotify_valid_until")
         try:
             cur_until = int(cur_s) if cur_s else 0
         except Exception:
             cur_until = 0
 
-        # 2) если подписка ещё активна — продляем от неё, иначе от текущего времени
+        # продляем от текущей подписки или от сейчас
         base = cur_until if cur_until > now_ts else now_ts
         valid_until = base + add_seconds
 
-        # 3) записать обновлённые поля
+        # ✅ ПИШЕМ В КЛЮЧ ПО КАФЕ (НЕ user:{tgid})
         await r.hset(
-            f"user:{tgid_int}",
+            sub_key,
             mapping={
                 "cafebotify_paid": "1",
                 "cafebotify_paid_at": str(now_ts),
                 "cafebotify_valid_until": str(valid_until),
                 "cafebotify_product": product,
+                "admin_id": str(tgid_int),
             },
         )
 
@@ -1797,16 +1813,20 @@ async def yookassa_webhook(request: web.Request):
         logger.error(f"yookassa_webhook redis error: {e}")
         return web.json_response({"status": "rediserror"})
 
-        # уведомления: админу (DEMO-ботом) + пользователю (основным ботом)
+    # ✅ ОС ТАЛЬНОЕ БЕЗ ИЗМЕНЕНИЙ: уведомления, черновики, демо-бот
     try:
-        demo_bot: Bot = request.app["bot"]  # DEMO bot (BOTTOKEN демо-сервиса)
+        demo_bot: Bot = request.app["bot"]
         client_token = (os.getenv("CLIENT_BOT_TOKEN") or "").strip()
 
         valid_until_dt = datetime.fromtimestamp(valid_until, tz=MSK_TZ).strftime("%d.%m.%Y")
         tariff_title = "360 дней" if product == "cafebotify_start_year" else "30 дней"
 
+        # Добавляем cafe_id в уведомления
+        cafe_title_text = cafe_title(CAFES.get(cafe_id, {})) if cafe_id in CAFES else cafe_id
+
         admin_text = (
             "💳 <b>Новая оплата CafebotifySTART</b>\n\n"
+            f"Кафе: <b>{cafe_title_text}</b>\n"
             f"Пользователь: <code>{tgid_int}</code>\n"
             f"Тариф: <b>{tariff_title}</b>\n"
             f"Подписка до: <b>{valid_until_dt}</b>"
@@ -1814,28 +1834,30 @@ async def yookassa_webhook(request: web.Request):
 
         user_text = (
             "✅ Оплата получена. Доступ к CafebotifySTART активирован.\n"
-            f"Срок действия до: <b>{valid_until_dt}</b>."
+            f"Срок действия до: <b>{valid_until_dt}</b>.\n\n"
+            f"<b>Кафе:</b> {cafe_title_text}"
         )
 
-                                # --- Доп. сообщение: черновик + подтверждение админом ---
-        cafe_code = DEFAULT_CAFE_CODE  # меняешь вручную только это (константа выше)
+        # черновик ссылок (добавляем cafe_id)
+        cafe_code = cafe_id  # динамически!
+        client_link = f"https://t.me/cafebotifySTARTBOT?start={urlsafe_b64encode(cafe_code.encode()).decode()}"
+        admin_link = f"https://t.me/cafebotifySTARTBOT?start={urlsafe_b64encode(f'adminid:{tgid_int}'.encode()).decode()}"
+        staff_link = f"https://t.me/cafebotifySTARTBOT?startgroup={urlsafe_b64encode(cafe_code.encode()).decode()}"
 
         user_links_text = (
             "<b>Ссылки</b>\n"
-            "• Клиентам: <a href=\"https://t.me/cafebotifySTARTBOT?start=Y2FmZV8wMDE\">https://t.me/cafebotifySTARTBOT?start=Y2FmZV8wMDE</a>\n"
-            "• Админу: <a href=\"https://t.me/cafebotifySTARTBOT?start=YWRtaW46Y2FmZV8wMDE\">https://t.me/cafebotifySTARTBOT?start=YWRtaW46Y2FmZV8wMDE</a>\n"
-            "• В staff-группу: <a href=\"https://t.me/cafebotifySTARTBOT?startgroup=Y2FmZV8wMDE\">https://t.me/cafebotifySTARTBOT?startgroup=Y2FmZV8wMDE</a>\n\n"
-            "В staff-группе выполните:\n"
+            f"• Клиентам: <a href=\"{client_link}\">{client_link}</a>\n"
+            f"• Админу: <a href=\"{admin_link}\">{admin_link}</a>\n"
+            f"• В staff-группу: <a href=\"{staff_link}\">{staff_link}</a>\n\n"
+            f"В staff-группе выполните:\n"
             f"<code>/bind {cafe_code}</code>"
         )
 
         draft_id = uuid.uuid4().hex[:12]
-
-        # ВАЖНО: сохраняем в Redis только идентификаторы (без текста),
-        # чтобы хвост cafe_code можно было менять вручную до нажатия "✅ Отправить"
         r = await get_redis_client()
         payload = {
             "tgid": tgid_int,
+            "cafe_id": cafe_id,
             "status": "pending",
             "created_at": int(time.time()),
         }
@@ -1850,6 +1872,7 @@ async def yookassa_webhook(request: web.Request):
         preview = (
             "<b>Черновик доп. сообщения клиенту</b>\n"
             f"tgid: <code>{tgid_int}</code>\n"
+            f"Кафе: <code>{cafe_id}</code>\n"
             f"Draft ID: <code>{draft_id}</code>\n\n"
             + user_links_text
         )
@@ -1862,16 +1885,14 @@ async def yookassa_webhook(request: web.Request):
             parse_mode="HTML",
         )
 
-        # админу — от DEMO
         await demo_bot.send_message(ADMIN_ID, admin_text)
 
-        # пользователю — от основного бота
         if not client_token:
             logger.error("CLIENT_BOT_TOKEN not set: cannot notify user tgid=%s payment_id=%s", tgid_int, payment_id)
         else:
             client_bot = Bot(token=client_token)
             try:
-                await client_bot.send_message(tgid_int, user_text, parse_mode="HTML")
+                await client_bot.send_message(tgid_int, user_text + "\n\n" + user_links_text, parse_mode="HTML")
             finally:
                 await client_bot.session.close()
 
