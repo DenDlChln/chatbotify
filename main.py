@@ -1852,7 +1852,6 @@ async def yookassa_webhook(request: web.Request):
             f"tgid: <code>{tgid_int}</code>\n"
             f"Draft ID: <code>{draft_id}</code>\n\n"
             + user_links_text
-            + "\n\n<i>P.S. Хвост /bind берется из DEFAULT_CAFE_CODE на момент отправки.</i>"
         )
 
         await demo_bot.send_message(
