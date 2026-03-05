@@ -1853,7 +1853,7 @@ async def yookassa_webhook(request: web.Request):
         )
 
         await demo_bot.send_message(
-            ADMINID,
+            ADMIN_ID,
             preview,
             reply_markup=kb,
             disable_web_page_preview=True,
