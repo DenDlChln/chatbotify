@@ -2194,32 +2194,5 @@ async def main():
     await asyncio.Event().wait()
 
 
-# 1. Сначала функция очистки (ВЫШЕ if __name__)
-async def clear_all_drafts_and_subs():
-    r = await get_redis_client()
-    draft_keys = await r.keys("paydraft:*")
-    customer_keys = await r.keys("customer:*")
-    return_keys = await r.keys("customers:set")
-    cafe_keys = await r.keys("cafe:*")
-    
-    all_to_delete = draft_keys + customer_keys + return_keys + cafe_keys
-    if all_to_delete:
-        deleted_count = await r.delete(*all_to_delete)
-        print(f"🗑️ УДАЛЕНО: {deleted_count} ключей!")
-    else:
-        print("❌ Ничего не найдено")
-    await r.aclose()
-
-# 2. Потом команда бота
-@dp.message_handler(commands=["clear_all"])
-async def cmd_clear_all(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
-        return await message.answer("❌ Нет доступа")
-    
-    await message.answer("🔄 Ищу ключи...")
-    await clear_all_drafts_and_subs()
-    await message.answer("✅ Очистка завершена!")
-
-# 3. ПОСЛЕДНИМ if __name__
 if __name__ == "__main__":
     asyncio.run(main())
