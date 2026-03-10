@@ -1377,6 +1377,72 @@ async def booking_finish(message: Message, state: FSMContext):
     await state.clear()
 
 
+@router.callback_query(F.data.startswith("paydraft_write:"))
+async def paydraft_write(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    
+    _, draft_id, tgid_str, cafe_id = cb.data.split(":", 3)
+    tgid_int = int(tgid_str)
+    
+    await cb.message.edit_reply_markup(reply_markup=None)  # убрать кнопку
+    await cb.message.reply(
+        f"💬 <b>Напишите сообщение плательщику</b> <code>{tgid_int}</code>\n"
+        f"(<i>Ответьте на это сообщение любым текстом</i>)",
+        parse_mode="HTML"
+    )
+    await cb.answer("Готово! Ответьте на сообщение выше")
+
+@router.message(F.from_user.id == ADMIN_ID)
+async def admin_reply_to_payer(message: Message):
+    if not message.reply_to_message:
+        return
+    
+    # Проверяем reply на инструкцию "Напишите сообщение плательщику"
+    replied_text = message.reply_to_message.text or ""
+    if "Напишите сообщение плательщику" not in replied_text:
+        return
+    
+    # Извлекаем tgid из callback_data черновика (через Redis)
+    r = await get_redis_client()
+    try:
+        # Ищем ближайший paydraft по времени
+        keys = await r.keys("paydraft:*")
+        for key in keys:
+            raw = await r.get(key)
+            if raw:
+                payload = json.loads(raw)
+                if payload.get("tgid") and payload.get("status") == "pending":
+                    tgid_int = int(payload["tgid"])
+                    
+                    # Отправляем плательщику
+                    client_token = os.getenv("CLIENT_BOT_TOKEN", "").strip()
+                    if client_token:
+                        client_bot = Bot(token=client_token)
+                        try:
+                            await client_bot.send_message(
+                                tgid_int,
+                                f"💬 <b>Ответ от поддержки:</b>\n\n{html.quote(message.text or '')}",
+                                parse_mode="HTML"
+                            )
+                            await message.answer(f"✅ Отправлено плательщику <code>{tgid_int}</code>")
+                            
+                            # Помечаем как отправленный
+                            payload["status"] = "sent"
+                            payload["sent_at"] = int(time.time())
+                            await r.setex(key, 7 * 86400, json.dumps(payload, ensure_ascii=False))
+                            return
+                        finally:
+                            await client_bot.session.close()
+        await message.answer("❌ Не найден активный черновик")
+    except Exception as e:
+        logger.error(f"admin_reply_to_payer error: {e}")
+        await message.answer("❌ Ошибка")
+    finally:
+        await r.aclose()
+
+
 # ---------------- Cafebotify subscriptions helpers ----------------
 def _promo_code_for_user(user_id: int) -> str:
     return f"CB{user_id}{(int(time.time()) // 100000) % 10}"
