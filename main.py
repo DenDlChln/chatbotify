@@ -1379,20 +1379,56 @@ async def booking_finish(message: Message, state: FSMContext):
 
 @router.callback_query(F.data.startswith("paydraft_write:"))
 async def paydraft_write(cb: CallbackQuery):
+    logger.info(f"PAYDRAFT_WRITE DEBUG: data='{cb.data}' from_user={cb.from_user.id}")  # DEBUG
+    
+    if not cb.message:
+        logger.error("PAYDRAFT_WRITE: no cb.message")
+        await cb.answer("Ошибка", show_alert=True)
+        return
+    
     if cb.from_user.id != ADMIN_ID:
+        logger.warning(f"PAYDRAFT_WRITE: access denied for {cb.from_user.id}")
         await cb.answer("Нет доступа", show_alert=True)
         return
     
-    _, draft_id, tgid_str, cafe_id = cb.data.split(":", 3)
-    tgid_int = int(tgid_str)
+    try:
+        parts = cb.data.split(":", 3)
+        if len(parts) != 4:
+            logger.error(f"PAYDRAFT_WRITE: invalid data format: {cb.data}")
+            await cb.answer("Ошибка данных", show_alert=True)
+            return
+        
+        _, draft_id, tgid_str, cafe_id = parts
+        tgid_int = int(tgid_str)
+        logger.info(f"PAYDRAFT_WRITE: draft={draft_id} tgid={tgid_int} cafe={cafe_id}")
+        
+    except ValueError as e:
+        logger.error(f"PAYDRAFT_WRITE: int conversion error: {e}")
+        await cb.answer("Ошибка ID", show_alert=True)
+        return
+    except Exception as e:
+        logger.error(f"PAYDRAFT_WRITE: parse error: {e}")
+        await cb.answer("Ошибка", show_alert=True)
+        return
     
-    await cb.message.edit_reply_markup(reply_markup=None)  # убрать кнопку
-    await cb.message.reply(
-        f"💬 <b>Напишите сообщение плательщику</b> <code>{tgid_int}</code>\n"
-        f"(<i>Ответьте на это сообщение любым текстом</i>)",
-        parse_mode="HTML"
-    )
-    await cb.answer("Готово! Ответьте на сообщение выше")
+    try:
+        # Убираем кнопку
+        await cb.message.edit_reply_markup(reply_markup=None)
+        
+        # Отправляем инструкцию
+        await cb.message.reply(
+            f"💬 <b>Напишите сообщение плательщику</b> <code>{tgid_int}</code>\n"
+            f"(<i>Ответьте на это сообщение любым текстом</i>)",
+            parse_mode="HTML"
+        )
+        
+        await cb.answer("✅ Готово! Ответьте на сообщение выше")
+        logger.info(f"PAYDRAFT_WRITE: success for tgid={tgid_int}")
+        
+    except Exception as e:
+        logger.error(f"PAYDRAFT_WRITE: send error: {e}")
+        await cb.answer("Ошибка отправки", show_alert=True)
+
 
 @router.message(F.from_user.id == ADMIN_ID)
 async def admin_reply_to_payer(message: Message):
