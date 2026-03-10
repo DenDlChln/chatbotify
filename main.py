@@ -1882,7 +1882,8 @@ async def yookassa_webhook(request: web.Request):
         admin_text = (
             "💳 <b>Новая оплата CafebotifySTART</b>\n\n"
             f"Кафе: <b>{cafe_title_text}</b>\n"
-            f"Пользователь: <code>{tgid_int}</code>\n"
+            f"👤 <code>{tgid_int}</code> "
+            f"(<a href='tg://user?id={tgid_int}'>👤 профиль</a>)\n"
             f"Тариф: <b>{tariff_title}</b>\n"
             f"Подписка до: <b>{valid_until_dt}</b>"
         )
