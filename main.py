@@ -1844,9 +1844,9 @@ async def yookassa_webhook(request: web.Request):
 
         # черновик ссылок (добавляем cafe_id)
         cafe_code = cafe_id  # динамически!
-        client_link = f"https://t.me/cafebotifySTARTBOT?start={urlsafe_b64encode(cafe_code.encode()).decode()}"
-        admin_link = f"https://t.me/cafebotifySTARTBOT?start={urlsafe_b64encode(f'adminid:{tgid_int}'.encode()).decode()}"
-        staff_link = f"https://t.me/cafebotifySTARTBOT?startgroup={urlsafe_b64encode(cafe_code.encode()).decode()}"
+        client_link = f"https://t.me/cafebotifySTARTBOT?start={base64.urlsafe_b64encode(cafe_code.encode()).decode().rstrip('=')}"
+        admin_link = f"https://t.me/cafebotifySTARTBOT?start={base64.urlsafe_b64encode(f'admin:{tgid_int}'.encode()).decode().rstrip('=')}"
+        staff_link = f"https://t.me/cafebotifySTARTBOT?startgroup={base64.urlsafe_b64encode(cafe_code.encode()).decode().rstrip('=')}"
 
         user_links_text = (
             "<b>Ссылки</b>\n"
