@@ -1430,6 +1430,12 @@ async def paydraft_write(cb: CallbackQuery):
         await cb.answer("Ошибка отправки", show_alert=True)
 
 
+@router.callback_query(F.data == "test_button")  # ← ТЕСТОВЫЙ
+async def test_button(cb: CallbackQuery):
+    logger.info("TEST BUTTON WORKS!")
+    await cb.answer("✅ Кнопки работают!")
+
+
 @router.message(F.from_user.id == ADMIN_ID)
 async def admin_reply_to_payer(message: Message):
     if not message.reply_to_message:
