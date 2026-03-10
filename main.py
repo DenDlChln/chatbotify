@@ -1868,11 +1868,6 @@ async def yookassa_webhook(request: web.Request):
         await r.setex(_pay_draft_key(draft_id), 7 * 86400, json.dumps(payload, ensure_ascii=False))
         await r.aclose()
 
-        kb = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="✅ Отправить ссылки", callback_data=f"paydraft_send:{draft_id}"),
-            InlineKeyboardButton(text="❌ Не отправлять", callback_data=f"paydraft_cancel:{draft_id}"),
-        ]])
-
         preview = (
             "<b>Черновик доп. сообщения клиенту</b>\n"
             f"tgid: <code>{tgid_int}</code>\n"
@@ -1883,8 +1878,7 @@ async def yookassa_webhook(request: web.Request):
 
         await demo_bot.send_message(
             ADMIN_ID,
-            preview,
-            reply_markup=kb,
+            preview + "\n\n💬 <b>Ответьте в этот чат — сообщение уйдет плательщику</b>",
             disable_web_page_preview=True,
             parse_mode="HTML",
         )
