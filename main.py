@@ -1378,6 +1378,18 @@ async def booking_finish(message: Message, state: FSMContext):
 
 
 @router.message(F.from_user.id == ADMIN_ID)
+async def admin_reply_debug(message: Message):
+    logger.info(f"🔍 ADMIN DEBUG: text='{message.text[:50]}' has_reply={message.reply_to_message is not None}")
+    
+    if message.reply_to_message:
+        logger.info(f"🔍 REPLIED: bot={message.reply_to_message.from_user.is_bot} text='{message.reply_to_message.text[:100]}'")
+        if "Новая оплата" in (message.reply_to_message.text or ""):
+            logger.info("🔍 PAYMENT NOTIFICATION FOUND!")
+    
+    await message.answer("DEBUG: получил reply")  # ← ТОСТ для теста
+
+
+@router.message(F.from_user.id == ADMIN_ID)
 async def admin_reply_to_client(message: Message):
     logger.info(f"ADMIN REPLY DEBUG: has_reply={message.reply_to_message is not None}")
     
