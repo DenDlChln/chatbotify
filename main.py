@@ -1033,6 +1033,58 @@ async def edit_cart(message: Message, state: FSMContext):
     await message.answer("Выберите позицию:", reply_markup=create_cart_pick_item_keyboard(cart))
 
 
+# Новый хендлер: ответы админа на черновики → плательщику
+@router.message(F.from_user.id == ADMIN_ID)
+async def admin_reply_to_payer(message: Message):
+    # Ищем reply_to_message с Draft ID в тексте
+    if not message.reply_to_message:
+        return  # обычное сообщение админа — игнор
+    
+    replied_text = message.reply_to_message.text or ""
+    draft_match = re.search(r"Draft ID:\s*<code>(\w+)</code>", replied_text)
+    if not draft_match:
+        return  # не reply на черновик
+    
+    draft_id = draft_match.group(1)
+    r = await get_redis_client()
+    try:
+        raw = await r.get(_pay_draft_key(draft_id))
+        if not raw:
+            await message.answer("❌ Черновик не найден или истек.")
+            return
+        payload = json.loads(raw)
+        if payload.get("status") != "pending":
+            await message.answer("❌ Черновик уже обработан.")
+            return
+        
+        tgid_int = int(payload["tgid"])
+        # Отправляем ответ плательщику (из основного бота или CLIENT_BOT_TOKEN)
+        client_token = (os.getenv("CLIENT_BOT_TOKEN") or "").strip()
+        if client_token:
+            client_bot = Bot(token=client_token)
+            try:
+                await client_bot.send_message(
+                    tgid_int,
+                    f"💬 <b>Ответ от поддержки:</b>\n\n{html.quote(message.text or '')}",
+                    parse_mode="HTML"
+                )
+            finally:
+                await client_bot.session.close()
+            await message.answer(f"✅ Отправлено плательщику <code>{tgid_int}</code>")
+        else:
+            await message.answer("❌ CLIENT_BOT_TOKEN не задан.")
+        
+        # Помечаем как sent
+        payload["status"] = "sent"
+        payload["sent_at"] = int(time.time())
+        await r.setex(_pay_draft_key(draft_id), 7 * 86400, json.dumps(payload, ensure_ascii=False))
+    except Exception as e:
+        logger.error(f"admin_reply_to_payer error: {e}")
+        await message.answer("❌ Ошибка обработки.")
+    finally:
+        await r.aclose()
+
+
 @router.message(StateFilter(OrderStates.cart_edit_pick_item))
 async def pick_item_to_edit(message: Message, state: FSMContext):
     text = (message.text or "").strip()
