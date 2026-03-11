@@ -1732,177 +1732,124 @@ async def yookassa_webhook(request: web.Request):
     data = await request.json()
     event = data.get("event")
     obj = data.get("object", {})
-    
+
     if event != "payment.succeeded":
         return web.json_response({"status": "ignored"})
 
     metadata = obj.get("metadata", {})
     tgid = metadata.get("telegram_user_id")
+    cafe_id = metadata.get("cafe_id")  # для первой оплаты может отсутствовать
 
-    # ✅ НОВОЕ: cafe_id из metadata (продление) ИЛИ из Redis (первый платёж) ИЛИ DEFAULT
-    cafe_id = metadata.get("cafe_id")  # Продление из основного бота
-    if not cafe_id:
-        # Первый платёж — ищем текущее кафе админа
-        try:
-            r = await get_redis_client()
-            cafe_id = await r.get(f"user:{tgid}:cafe_id")  # был ли в основном боте
-            if not cafe_id:
-                cafe_id = DEFAULT_CAFE_ID  # дефолтное кафе из config
-            await r.aclose()
-        except Exception:
-            # Запасной вариант — всегда есть cafe_001
-            logger.warning(f"Redis недоступен для tgid={tgid}, используем DEFAULT_CAFE_ID")
-            cafe_id = DEFAULT_CAFE_ID
-
-    # логируем с cafe_id
     payment_id = obj.get("id")
     amount = obj.get("amount", {})
     amount_value = amount.get("value") if isinstance(amount, dict) else None
     amount_currency = amount.get("currency") if isinstance(amount, dict) else None
     payment_status = obj.get("status")
 
-    logger.info(f"Yookassa: payment_id={payment_id} cafe_id={cafe_id} status={payment_status} "
-                f"amount={amount_value} {amount_currency} tgid={tgid}")
+    logger.info(
+        f"Yookassa webhook payment_id={payment_id} "
+        f"cafe_id={cafe_id} status={payment_status} "
+        f"amount={amount_value} {amount_currency} tgid={tgid}"
+    )
 
-    if not tgid or not cafe_id:
-        logger.error(f"Missing tgid={tgid} or cafe_id={cafe_id}")
-        return web.json_response({"status": "missing_data"})
+    if not tgid:
+        logger.error(f"Missing telegram_user_id in payment metadata, payment_id={payment_id}")
+        return web.json_response({"status": "missing_tgid"})
 
     try:
         tgid_int = int(tgid)
     except (TypeError, ValueError):
-        return web.json_response({"status": "badtgid"})
+        return web.json_response({"status": "bad_tgid"})
 
     now_ts = int(time.time())
     product = metadata.get("product") or "cafebotify_start_month"
-    if product == "cafebotify_start_year":
-        period_days = 360
-    else:
-        period_days = 30
+    period_days = 360 if product == "cafebotify_start_year" else 30
+    valid_until = now_ts + period_days * 86400
+    valid_until_dt = datetime.fromtimestamp(valid_until, tz=MSK_TZ).strftime("%d.%m.%Y %H:%M")
 
-    add_seconds = period_days * 86400
+    tariff_title = "360 дней" if product == "cafebotify_start_year" else "30 дней"
+
+    draft_id = uuid.uuid4().hex[:12]
+    payload = {
+        "tgid": tgid_int,
+        "cafe_id": cafe_id,
+        "payment_id": payment_id,
+        "product": product,
+        "status": "pending",
+        "created_at": now_ts,
+        "valid_until": valid_until,
+        "amount_value": amount_value,
+        "amount_currency": amount_currency,
+    }
 
     try:
         r = await get_redis_client()
-
-        # ✅ НОВЫЙ КЛЮЧ: cafe:{cafe_id}:admin_subscription
-        sub_key = f"cafe:{cafe_id}:admin_subscription"
-        # ... остальной код
-        
-        # читаем ТЕКУЩУЮ подписку ЭТОГО КАФЕ
-        cur_s = await r.hget(sub_key, "cafebotify_valid_until")
-        try:
-            cur_until = int(cur_s) if cur_s else 0
-        except Exception:
-            cur_until = 0
-
-        # продляем от текущей подписки или от сейчас
-        base = cur_until if cur_until > now_ts else now_ts
-        valid_until = base + add_seconds
-
-        # ✅ ПИШЕМ В КЛЮЧ ПО КАФЕ (НЕ user:{tgid})
-        await r.hset(
-            sub_key,
-            mapping={
-                "cafebotify_paid": "1",
-                "cafebotify_paid_at": str(now_ts),
-                "cafebotify_valid_until": str(valid_until),
-                "cafebotify_product": product,
-                "admin_id": str(tgid_int),
-            },
-        )
-
-        await r.aclose()
-
-    except Exception as e:
-        logger.error(f"yookassa_webhook redis error: {e}")
-        return web.json_response({"status": "rediserror"})
-
-    # ✅ ОС ТАЛЬНОЕ БЕЗ ИЗМЕНЕНИЙ: уведомления, черновики, демо-бот
-    try:
-        demo_bot: Bot = request.app["bot"]
-        client_token = (os.getenv("CLIENT_BOT_TOKEN") or "").strip()
-
-        valid_until_dt = datetime.fromtimestamp(valid_until, tz=MSK_TZ).strftime("%d.%m.%Y")
-        tariff_title = "360 дней" if product == "cafebotify_start_year" else "30 дней"
-
-        # Добавляем cafe_id в уведомления
-        cafe_title_text = cafe_id
-
-        admin_text = (
-            "💳 <b>Новая оплата CafebotifySTART</b>\n\n"
-            f"Кафе: <b>{cafe_title_text}</b>\n"
-            f"👤 <code>{tgid_int}</code> "
-            f"(<a href='tg://user?id={tgid_int}'>👤 профиль</a>)\n"
-            f"Тариф: <b>{tariff_title}</b>\n"
-            f"Подписка до: <b>{valid_until_dt}</b>"
-        )
-
-        user_text = (
-            "✅ Оплата получена. Доступ к CafebotifySTART активирован.\n"
-            f"Срок действия до: <b>{valid_until_dt}</b>.\n\n"
-            f"<b>Кафе:</b> {cafe_title_text}"
-        )
-
-        # черновик ссылок (добавляем cafe_id)
-        cafe_code = cafe_id  # динамически!
-        client_link = f"https://t.me/cafebotifySTARTBOT?start={base64.urlsafe_b64encode(cafe_code.encode()).decode().rstrip('=')}"
-        admin_link = f"https://t.me/cafebotifySTARTBOT?start={base64.urlsafe_b64encode(f'admin:{tgid_int}'.encode()).decode().rstrip('=')}"
-        staff_link = f"https://t.me/cafebotifySTARTBOT?startgroup={base64.urlsafe_b64encode(cafe_code.encode()).decode().rstrip('=')}"
-
-        user_links_text = (
-            "<b>Ссылки</b>\n"
-            f"• Клиентам: <a href=\"{client_link}\">{client_link}</a>\n"
-            f"• Админу: <a href=\"{admin_link}\">{admin_link}</a>\n"
-            f"• В staff-группу: <a href=\"{staff_link}\">{staff_link}</a>\n\n"
-            f"В staff-группе выполните:\n"
-            f"<code>/bind {cafe_code}</code>"
-        )
-
-        draft_id = uuid.uuid4().hex[:12]
-        r = await get_redis_client()
-        payload = {
-            "tgid": tgid_int,
-            "cafe_id": cafe_id,
-            "status": "pending",
-            "created_at": int(time.time()),
-        }
         await r.setex(_pay_draft_key(draft_id), 7 * 86400, json.dumps(payload, ensure_ascii=False))
         await r.aclose()
+    except Exception as e:
+        logger.error(f"yookassa_webhook draft redis error: {e}")
+        return web.json_response({"status": "redis_error"})
 
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💬 ТЕСТ", callback_data="test_button")]
-        ])
+    cafe_text = (
+        f"<code>{html.quote(str(cafe_id))}</code>"
+        if cafe_id else
+        "<b>не привязан</b>"
+    )
 
-        preview = (
-            "<b>Черновик доп. сообщения клиенту</b>\n"
-            f"tgid: <code>{tgid_int}</code>\n"
-            f"Кафе: <code>{cafe_id}</code>\n"
-            f"Draft ID: <code>{draft_id}</code>\n\n"
-            + user_links_text
-        )
+    preview = (
+        "🧾 <b>Черновик уведомления</b>\n\n"
+        f"tgid: <code>{tgid_int}</code>\n"
+        f"cafe_id: {cafe_text}\n"
+        f"Draft ID: <code>{draft_id}</code>"
+    )
 
+    admin_text = (
+        "💳 <b>Новая успешная оплата CafebotifySTART</b>\n\n"
+        f"• tgid: <code>{tgid_int}</code>\n"
+        f"• payment_id: <code>{html.quote(str(payment_id or '-'))}</code>\n"
+        f"• тариф: <b>{tariff_title}</b>\n"
+        f"• сумма: <b>{html.quote(str(amount_value or '-'))} {html.quote(str(amount_currency or ''))}</b>\n"
+        f"• cafe_id: {cafe_text}\n"
+        f"• действует до: <b>{valid_until_dt}</b>\n"
+        f"• Draft ID: <code>{draft_id}</code>\n\n"
+        "Первая оплата принята. Привязка кафе выполняется позже в отдельном боте."
+    )
+
+    demo_bot = request.app["bot"]
+
+    try:
         await demo_bot.send_message(
             ADMIN_ID,
             preview,
-            reply_markup=kb,
             disable_web_page_preview=True,
             parse_mode="HTML",
         )
-
-        await demo_bot.send_message(ADMIN_ID, admin_text)
-
-        if not client_token:
-            logger.error("CLIENT_BOT_TOKEN not set: cannot notify user tgid=%s payment_id=%s", tgid_int, payment_id)
-        else:
-            client_bot = Bot(token=client_token)
-            try:
-                await client_bot.send_message(tgid_int, user_text + "\n\n" + user_links_text, parse_mode="HTML")
-            finally:
-                await client_bot.session.close()
-
+        await demo_bot.send_message(
+            ADMIN_ID,
+            admin_text,
+            disable_web_page_preview=True,
+            parse_mode="HTML",
+        )
     except Exception:
-        logger.exception("yookassa_webhook notify error payment_id=%s tgid=%s", payment_id, tgid)
+        logger.exception(f"yookassa_webhook admin notify error payment_id={payment_id} tgid={tgid}")
+
+    client_token = (os.getenv("CLIENT_BOT_TOKEN") or "").strip()
+    if client_token:
+        client_bot = Bot(token=client_token)
+        try:
+            user_text = (
+                "✅ <b>Оплата прошла успешно</b>\n\n"
+                f"Тариф CafebotifySTART активирован на <b>{tariff_title}</b>.\n"
+                f"Срок действия: до <b>{valid_until_dt}</b>.\n\n"
+                "Следующий шаг — привязка свободного кафе администратором."
+            )
+            await client_bot.send_message(tgid_int, user_text, parse_mode="HTML")
+        except Exception:
+            logger.exception(f"yookassa_webhook user notify error payment_id={payment_id} tgid={tgid}")
+        finally:
+            await client_bot.session.close()
+    else:
+        logger.error(f"CLIENT_BOT_TOKEN not set; cannot notify user tgid={tgid_int}, payment_id={payment_id}")
 
     return web.json_response({"status": "ok"})
 
