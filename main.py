@@ -1908,31 +1908,31 @@ async def yookassa_webhook(request: web.Request):
         logger.exception(f"yookassa_webhook admin notify error payment_id={payment_id} tgid={tgid}")
 
     if cafe_id:
-    try:
-        r = await get_redis_client()
-        eff_admin = await get_effective_admin_id(r, cafe_id)
-        group_id = await r.get(k_staff_group(cafe_id))
-        await r.aclose()
+        try:
+            r = await get_redis_client()
+            eff_admin = await get_effective_admin_id(r, cafe_id)
+            group_id = await r.get(k_staff_group(cafe_id))
+            await r.aclose()
 
-        if eff_admin and eff_admin != ADMIN_ID:
-            await demo_bot.send_message(
-                eff_admin,
-                admin_text,
-                disable_web_page_preview=True,
-                parse_mode="HTML",
-            )
+            if eff_admin and eff_admin != ADMIN_ID:
+                await demo_bot.send_message(
+                    eff_admin,
+                    admin_text,
+                    disable_web_page_preview=True,
+                    parse_mode="HTML",
+                )
 
-        if group_id:
-            await demo_bot.send_message(
-                int(group_id),
-                admin_text,
-                disable_web_page_preview=True,
-                parse_mode="HTML",
+            if group_id:
+                await demo_bot.send_message(
+                    int(group_id),
+                    admin_text,
+                    disable_web_page_preview=True,
+                    parse_mode="HTML",
+                )
+        except Exception:
+            logger.exception(
+                f"yookassa_webhook secondary notify failed cafe_id={cafe_id} payment_id={payment_id}"
             )
-    except Exception:
-        logger.exception(
-            f"yookassa_webhook secondary notify failed cafe_id={cafe_id} payment_id={payment_id}"
-        )
     
     client_token = (os.getenv("CLIENT_BOT_TOKEN") or "").strip()
     if client_token:
@@ -2171,6 +2171,7 @@ subs_task: Optional[asyncio.Task] = None
 async def on_startup_bot(bot: Bot):
     global smart_task, subs_task
     await sync_menu_from_redis()
+    
     if smart_task is None or smart_task.done():
         smart_task = asyncio.create_task(smart_return_loop(bot))
         
