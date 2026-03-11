@@ -2173,8 +2173,12 @@ async def on_startup_bot(bot: Bot):
     await sync_menu_from_redis()
     if smart_task is None or smart_task.done():
         smart_task = asyncio.create_task(smart_return_loop(bot))
-    if subs_task is None or subs_task.done():
-        subs_task = asyncio.create_task(subs_loop(bot))
+        
+    # Временно отключено: старый subs_loop читает user:* и старые поля
+    # cafebotify_paid / cafebotify_valid_until, что конфликтует с новой
+    # моделью подписок по cafe:* / admin_subscription.
+    # if subs_task is None or subs_task.done():
+    #     subs_task = asyncio.create_task(subs_loop(bot))
 
     try:
         await bot.set_webhook(WEBHOOK_URL, secret_token=WEBHOOK_SECRET)
