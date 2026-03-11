@@ -1814,28 +1814,28 @@ async def yookassa_webhook(request: web.Request):
     tariff_title = "360 дней" if product == "cafebotify_start_year" else "30 дней"
 
     if cafe_id:
-    try:
-        r = await get_redis_client()
-        eff_admin = await get_effective_admin_id(r, cafe_id)
-        await r.hset(
-            k_admin_subscription(cafe_id),
-            mapping={
-                "cafebotify_valid_until": str(valid_until),
-                "cafebotify_paid": "1",
-                "admin_id": str(eff_admin or 0),
-                "last_payment_id": str(payment_id or ""),
-                "last_product": str(product),
-                "last_amount_value": str(amount_value or ""),
-                "last_amount_currency": str(amount_currency or ""),
-                "last_paid_at": str(now_ts),
-            },
-        )
-        await r.aclose()
-    except Exception:
-        logger.exception(
-            f"yookassa_webhook failed to update cafe subscription cafe_id={cafe_id} payment_id={payment_id}"
-        )
-        return web.json_response({"status": "redis_update_failed"})
+        try:
+            r = await get_redis_client()
+            eff_admin = await get_effective_admin_id(r, cafe_id)
+            await r.hset(
+                k_admin_subscription(cafe_id),
+                mapping={
+                    "cafebotify_valid_until": str(valid_until),
+                    "cafebotify_paid": "1",
+                    "admin_id": str(eff_admin or 0),
+                    "last_payment_id": str(payment_id or ""),
+                    "last_product": str(product),
+                    "last_amount_value": str(amount_value or ""),
+                    "last_amount_currency": str(amount_currency or ""),
+                    "last_paid_at": str(now_ts),
+                },
+            )
+            await r.aclose()
+        except Exception:
+            logger.exception(
+                f"yookassa_webhook failed to update cafe subscription cafe_id={cafe_id} payment_id={payment_id}"
+            )
+            return web.json_response({"status": "redis_update_failed"})
 
     draft_id = uuid.uuid4().hex[:12]
     payload = {
