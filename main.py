@@ -476,11 +476,22 @@ async def _show_cart(message: Message, state: FSMContext):
 
 
 # ---------------- Buttons ----------------
+# ---------------- Buttons ----------------
+BTN_CLIENT_MENU = "🍽 Меню клиента"
+BTN_OWNER_MENU = "🧑‍💼 Меню владельца"
+
 BTN_CALL = "📞 Позвонить"
 BTN_HOURS = "⏰ Часы работы"
 BTN_STATS = "📊 Статистика"
 BTN_BOOKING = "📅 Бронирование"
 BTN_MENU_EDIT = "🛠 Меню"
+
+BTN_STAFF_GROUP = "👥 Группа персонала"
+BTN_LINKS = "🔗 Ссылки"
+BTN_RENEW_SUB = "💳 Продлить подписку"
+BTN_SUBSCRIPTION = "🗓 Подписка"
+BTN_ADMIN_HELP = "ℹ️ Справка админа"
+BTN_SUPPORT = "🆘 Поддержка"
 
 BTN_CART = "🛒 Корзина"
 BTN_CHECKOUT = "✅ Оформить"
@@ -490,6 +501,8 @@ BTN_EDIT_CART = "✏️ Изменить"
 
 BTN_CANCEL = "🔙 Отмена"
 BTN_BACK = "⬅️ Назад"
+BTN_TO_START = "🏠 Главное меню"
+
 BTN_CONFIRM = "Подтвердить"
 BTN_READY_NOW = "🚶 Сейчас"
 BTN_READY_20 = "⏱ Через 20 мин"
@@ -503,36 +516,89 @@ MENU_EDIT_ADD = "➕ Добавить позицию"
 MENU_EDIT_EDIT = "✏️ Изменить цену"
 MENU_EDIT_DEL = "🗑 Удалить позицию"
 
-# кнопка оплаты
 BTN_PAY_MONTH = "💳 Оплатить 30 дней"
 BTN_PAY_YEAR = "💳 Оплатить 360 дней"
 
 
 # ---------------- Keyboards ----------------
-def create_main_keyboard() -> ReplyKeyboardMarkup:
+def create_start_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=BTN_CLIENT_MENU), KeyboardButton(text=BTN_OWNER_MENU)],
+            [KeyboardButton(text=BTN_PAY_MONTH), KeyboardButton(text=BTN_PAY_YEAR)],
+        ],
+        resize_keyboard=True,
+        is_persistent=True,
+    )
+
+
+def create_client_menu_keyboard() -> ReplyKeyboardMarkup:
     kb: list[list[KeyboardButton]] = []
+
     for drink in MENU.keys():
         kb.append([KeyboardButton(text=drink)])
-    kb.append([KeyboardButton(text=BTN_CART), KeyboardButton(text=BTN_CHECKOUT), KeyboardButton(text=BTN_BOOKING)])
-    kb.append([KeyboardButton(text=BTN_STATS), KeyboardButton(text=BTN_CALL), KeyboardButton(text=BTN_HOURS)])
-    kb.append([KeyboardButton(text=BTN_MENU_EDIT)])
-    kb.append([KeyboardButton(text=BTN_PAY_MONTH), KeyboardButton(text=BTN_PAY_YEAR)])
-    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True, is_persistent=True)
+
+    kb.append([
+        KeyboardButton(text=BTN_CART),
+        KeyboardButton(text=BTN_CHECKOUT),
+        KeyboardButton(text=BTN_BOOKING),
+    ])
+    kb.append([
+        KeyboardButton(text=BTN_CALL),
+        KeyboardButton(text=BTN_HOURS),
+    ])
+    kb.append([KeyboardButton(text=BTN_TO_START)])
+
+    return ReplyKeyboardMarkup(
+        keyboard=kb,
+        resize_keyboard=True,
+        is_persistent=True,
+    )
+
+
+def create_owner_menu_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=BTN_STATS), KeyboardButton(text=BTN_MENU_EDIT)],
+            [KeyboardButton(text=BTN_STAFF_GROUP), KeyboardButton(text=BTN_LINKS)],
+            [KeyboardButton(text=BTN_RENEW_SUB), KeyboardButton(text=BTN_SUBSCRIPTION)],
+            [KeyboardButton(text=BTN_ADMIN_HELP), KeyboardButton(text=BTN_SUPPORT)],
+            [KeyboardButton(text=BTN_TO_START)],
+        ],
+        resize_keyboard=True,
+        is_persistent=True,
+    )
 
 
 def create_cart_keyboard(cart_has_items: bool) -> ReplyKeyboardMarkup:
     kb: list[list[KeyboardButton]] = []
+
     kb.append([KeyboardButton(text=BTN_CART), KeyboardButton(text=BTN_CHECKOUT)])
+
     if cart_has_items:
-        kb.append([KeyboardButton(text=BTN_EDIT_CART), KeyboardButton(text=BTN_CLEAR_CART), KeyboardButton(text=BTN_CANCEL_ORDER)])
+        kb.append([
+            KeyboardButton(text=BTN_EDIT_CART),
+            KeyboardButton(text=BTN_CLEAR_CART),
+            KeyboardButton(text=BTN_CANCEL_ORDER),
+        ])
     else:
         kb.append([KeyboardButton(text=BTN_CANCEL_ORDER)])
+
     for drink in MENU.keys():
         kb.append([KeyboardButton(text=drink)])
-    kb.append([KeyboardButton(text=BTN_BOOKING), KeyboardButton(text=BTN_STATS)])
-    kb.append([KeyboardButton(text=BTN_CALL), KeyboardButton(text=BTN_HOURS), KeyboardButton(text=BTN_MENU_EDIT)])
-    kb.append([KeyboardButton(text=BTN_PAY_MONTH), KeyboardButton(text=BTN_PAY_YEAR)])
-    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True, is_persistent=True)
+
+    kb.append([
+        KeyboardButton(text=BTN_BOOKING),
+        KeyboardButton(text=BTN_CALL),
+        KeyboardButton(text=BTN_HOURS),
+    ])
+    kb.append([KeyboardButton(text=BTN_TO_START)])
+
+    return ReplyKeyboardMarkup(
+        keyboard=kb,
+        resize_keyboard=True,
+        is_persistent=True,
+    )
 
 
 def create_quantity_keyboard() -> ReplyKeyboardMarkup:
@@ -587,7 +653,11 @@ def create_cart_edit_actions_keyboard() -> ReplyKeyboardMarkup:
 
 
 def create_booking_cancel_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=BTN_CANCEL)]], resize_keyboard=True, one_time_keyboard=True)
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text=BTN_CANCEL)]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
 
 
 def create_booking_people_keyboard() -> ReplyKeyboardMarkup:
@@ -614,13 +684,17 @@ def create_menu_edit_keyboard() -> ReplyKeyboardMarkup:
 
 
 def create_menu_edit_cancel_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=BTN_BACK)]], resize_keyboard=True, one_time_keyboard=True)
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text=BTN_BACK)]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
 
 
 def create_pick_menu_item_keyboard() -> ReplyKeyboardMarkup:
     rows = [[KeyboardButton(text=k)] for k in MENU.keys()]
     rows.append([KeyboardButton(text=BTN_BACK)])
-    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True))
 
 
 # ---------------- DEMO: examples for client ----------------
@@ -647,6 +721,77 @@ def demo_stats_preview_text() -> str:
         "• 🥛 Латте: <b>41</b> шт., <b>11 070₽</b>\n"
         "• 🍵 Чай: <b>22</b> шт., <b>3 960₽</b>\n"
         "• ⚡ Эспрессо: <b>11</b> шт., <b>2 200₽</b>"
+    )
+
+
+def owner_staff_group_text() -> str:
+    return (
+        "👥 <b>Группа персонала</b>\n\n"
+        "Здесь владелец сможет подключить рабочий чат команды, "
+        "куда бот будет отправлять новые заказы и бронирования.\n\n"
+        "Что будет доступно:\n"
+        "• уведомления о новых заказах;\n"
+        "• общий чат для сотрудников смены;\n"
+        "• быстрое подключение персонала без доступа к настройкам владельца."
+    )
+
+
+def owner_links_text() -> str:
+    return (
+        "🔗 <b>Ссылки</b>\n\n"
+        "В этом разделе будут собраны все ссылки вашего кафе:\n"
+        "• клиентская ссылка на бота;\n"
+        "• ссылка для владельца;\n"
+        "• ссылка для staff-группы;\n"
+        "• служебные подключения.\n\n"
+        "Это удобно для размещения в соцсетях, на сайте и в QR-кодах."
+    )
+
+
+def owner_renew_subscription_text() -> str:
+    return (
+        "💳 <b>Продлить подписку</b>\n\n"
+        "Здесь владелец сможет быстро продлить доступ к боту без лишних действий.\n\n"
+        "Обычно это включает:\n"
+        "• оплату на 30 дней;\n"
+        "• оплату на 360 дней;\n"
+        "• автоматическое продление доступа после успешной оплаты."
+    )
+
+
+def owner_subscription_text() -> str:
+    return (
+        "🗓 <b>Подписка</b>\n\n"
+        "В этом разделе отображается информация по текущему тарифу кафе:\n"
+        "• активна ли подписка;\n"
+        "• до какой даты действует доступ;\n"
+        "• какой период оплачен;\n"
+        "• когда потребуется продление."
+    )
+
+
+def owner_admin_help_text() -> str:
+    return (
+        "ℹ️ <b>Справка админа</b>\n\n"
+        "Здесь собрана краткая инструкция для владельца кафе.\n\n"
+        "Основные разделы:\n"
+        "• <b>Статистика</b> — отчёты по заказам и выручке;\n"
+        "• <b>Меню</b> — управление позициями и ценами;\n"
+        "• <b>Группа персонала</b> — рабочий чат сотрудников;\n"
+        "• <b>Ссылки</b> — быстрый доступ ко всем ссылкам бота;\n"
+        "• <b>Подписка</b> — статус и срок действия сервиса."
+    )
+
+
+def owner_support_text() -> str:
+    return (
+        "🆘 <b>Поддержка</b>\n\n"
+        "Этот раздел нужен для связи с поддержкой Cafebotify.\n\n"
+        "Здесь владелец сможет:\n"
+        "• получить помощь по настройке;\n"
+        "• сообщить о проблеме;\n"
+        "• уточнить вопросы по оплате и подписке;\n"
+        "• запросить доработки или подключение новых функций."
     )
 
 
@@ -818,6 +963,36 @@ async def show_hours(message: Message):
         f"🕐 <b>Сейчас:</b> {msk_time} (МСК)\n{get_work_status()}{_address_line()}",
         reply_markup=create_main_keyboard(),
     )
+
+
+@router.message(F.text == BTN_STAFF_GROUP)
+async def owner_staff_group(message: Message):
+    await message.answer(owner_staff_group_text(), reply_markup=create_owner_menu_keyboard())
+
+
+@router.message(F.text == BTN_LINKS)
+async def owner_links(message: Message):
+    await message.answer(owner_links_text(), reply_markup=create_owner_menu_keyboard())
+
+
+@router.message(F.text == BTN_RENEW_SUB)
+async def owner_renew_subscription(message: Message):
+    await message.answer(owner_renew_subscription_text(), reply_markup=create_owner_menu_keyboard())
+
+
+@router.message(F.text == BTN_SUBSCRIPTION)
+async def owner_subscription(message: Message):
+    await message.answer(owner_subscription_text(), reply_markup=create_owner_menu_keyboard())
+
+
+@router.message(F.text == BTN_ADMIN_HELP)
+async def owner_admin_help(message: Message):
+    await message.answer(owner_admin_help_text(), reply_markup=create_owner_menu_keyboard())
+
+
+@router.message(F.text == BTN_SUPPORT)
+async def owner_support(message: Message):
+    await message.answer(owner_support_text(), reply_markup=create_owner_menu_keyboard())
 
 
 # ---------------- Menu edit entry (DEMO preview for non-admin) ----------------
