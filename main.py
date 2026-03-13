@@ -1033,7 +1033,10 @@ async def pay_year_button(message: Message):
 # ---------------- Info buttons ----------------
 @router.message(F.text == BTN_CALL)
 async def call_phone(message: Message):
-    await message.answer(f"📞 <b>Телефон:</b> <code>{html.quote(CAFE_PHONE)}</code>", reply_markup=create_start_keyboard())
+    await message.answer(
+        f"📞 <b>Телефон:</b> <code>{html.quote(CAFE_PHONE)}</code>",
+        reply_markup=create_client_menu_keyboard(),
+    )
 
 
 @router.message(F.text == BTN_HOURS)
@@ -1041,7 +1044,7 @@ async def show_hours(message: Message):
     msk_time = get_moscow_time().strftime("%H:%M")
     await message.answer(
         f"🕐 <b>Сейчас:</b> {msk_time} (МСК)\n{get_work_status()}{_address_line()}",
-        reply_markup=create_start_keyboard(),
+        reply_markup=create_client_menu_keyboard(),
     )
 
 
@@ -2489,7 +2492,7 @@ async def any_text_message(message: Message, state: FSMContext):
 
     await message.answer(
         "Не понял. Используйте кнопки меню.",
-        reply_markup=create_start_keyboard(),
+        reply_markup=create_client_menu_keyboard(),
     )
 
 
