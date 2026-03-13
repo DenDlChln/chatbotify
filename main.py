@@ -524,7 +524,8 @@ BTN_PAY_YEAR = "💳 Оплатить 360 дней"
 def create_start_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text=BTN_CLIENT_MENU), KeyboardButton(text=BTN_OWNER_MENU)],
+            [KeyboardButton(text=BTN_CLIENT_MENU)],
+            [KeyboardButton(text=BTN_OWNER_MENU)],
             [KeyboardButton(text=BTN_PAY_MONTH), KeyboardButton(text=BTN_PAY_YEAR)],
         ],
         resize_keyboard=True,
