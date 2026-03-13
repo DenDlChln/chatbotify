@@ -952,13 +952,13 @@ async def botstart_cmd(message: Message):
         "• Запуск за 1 день\n\n"
         f"🌐 Сайт: {SITE_URL}"
     )
-    await message.answer(text, disable_web_page_preview=True, reply_markup=create_main_keyboard())
+    await message.answer(text, disable_web_page_preview=True, reply_markup=create_start_keyboard())
 
 
 @router.message(F.text == BTN_REPEAT_NO)
 async def repeat_no(message: Message, state: FSMContext):
     await state.update_data(repeat_offer_snapshot=None)
-    await message.answer("Ок.", reply_markup=create_main_keyboard())
+    await message.answer("Ок.", reply_markup=create_start_keyboard())
 
 
 
@@ -968,7 +968,7 @@ async def repeat_last(message: Message, state: FSMContext):
     snap = data.get("repeat_offer_snapshot") or await get_last_order_snapshot(message.from_user.id)
 
     if not snap or not isinstance(snap.get("cart"), dict) or not snap.get("cart"):
-        await message.answer("Не нашёл последний заказ.", reply_markup=create_main_keyboard())
+        await message.answer("Не нашёл последний заказ.", reply_markup=create_start_keyboard())
         return
 
     cart = {}
@@ -980,7 +980,7 @@ async def repeat_last(message: Message, state: FSMContext):
 
     filtered = {d: q for d, q in cart.items() if d in MENU and q > 0}
     if not filtered:
-        await message.answer("Позиции из прошлого заказа сейчас отсутствуют в меню.", reply_markup=create_main_keyboard())
+        await message.answer("Позиции из прошлого заказа сейчас отсутствуют в меню.", reply_markup=create_start_keyboard())
         return
 
     await state.update_data(cart=filtered)
@@ -1011,7 +1011,7 @@ async def pay_month_button(message: Message):
     )
     await message.answer(
         f"{text}\n\n<a href=\"{html.quote(url)}\">Оплатить 30 дней</a>",
-        reply_markup=create_main_keyboard(),
+        reply_markup=create_start_keyboard(),
     )
 
 
@@ -1028,14 +1028,14 @@ async def pay_year_button(message: Message):
     )
     await message.answer(
         f"{text}\n\n<a href=\"{html.quote(url)}\">Оплатить 360 дней</a>",
-        reply_markup=create_main_keyboard(),
+        reply_markup=create_start_keyboard(),
     )
 
 
 # ---------------- Info buttons ----------------
 @router.message(F.text == BTN_CALL)
 async def call_phone(message: Message):
-    await message.answer(f"📞 <b>Телефон:</b> <code>{html.quote(CAFE_PHONE)}</code>", reply_markup=create_main_keyboard())
+    await message.answer(f"📞 <b>Телефон:</b> <code>{html.quote(CAFE_PHONE)}</code>", reply_markup=create_start_keyboard())
 
 
 @router.message(F.text == BTN_HOURS)
@@ -1043,7 +1043,7 @@ async def show_hours(message: Message):
     msk_time = get_moscow_time().strftime("%H:%M")
     await message.answer(
         f"🕐 <b>Сейчас:</b> {msk_time} (МСК)\n{get_work_status()}{_address_line()}",
-        reply_markup=create_main_keyboard(),
+        reply_markup=create_start_keyboard(),
     )
 
 
@@ -1083,9 +1083,9 @@ async def menu_edit_entry(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         if DEMO_MODE:
             await message.answer(demo_menu_edit_preview_text(), reply_markup=create_menu_edit_keyboard())
-            await message.answer("🔒 Редактирование доступно только администратору.", reply_markup=create_main_keyboard())
+            await message.answer("🔒 Редактирование доступно только администратору.", reply_markup=create_start_keyboard())
         else:
-            await message.answer("🔒 Редактирование доступно только администратору.", reply_markup=create_main_keyboard())
+            await message.answer("🔒 Редактирование доступно только администратору.", reply_markup=create_start_keyboard())
         return
 
     await sync_menu_from_redis()
@@ -1102,7 +1102,7 @@ async def menu_edit_choose_action(message: Message, state: FSMContext):
 
     if message.text == BTN_BACK:
         await state.clear()
-        await message.answer("Ок.", reply_markup=create_main_keyboard())
+        await message.answer("Ок.", reply_markup=create_start_keyboard())
         return
 
     if message.text == MENU_EDIT_ADD:
@@ -1167,7 +1167,7 @@ async def menu_edit_add_price(message: Message, state: FSMContext):
     name = str(data.get("add_name") or "").strip()
     await menu_set_item(name, price)
     await state.clear()
-    await message.answer("✅ Добавлено.", reply_markup=create_main_keyboard())
+    await message.answer("✅ Добавлено.", reply_markup=create_start_keyboard())
 
 
 @router.message(StateFilter(MenuEditStates.pick_edit_item))
@@ -1214,12 +1214,12 @@ async def menu_edit_price(message: Message, state: FSMContext):
     name = str(data.get("edit_name") or "")
     if name not in MENU:
         await state.clear()
-        await message.answer("Позиция не найдена. /start", reply_markup=create_main_keyboard())
+        await message.answer("Позиция не найдена. /start", reply_markup=create_start_keyboard())
         return
 
     await menu_set_item(name, price)
     await state.clear()
-    await message.answer("✅ Цена изменена.", reply_markup=create_main_keyboard())
+    await message.answer("✅ Цена изменена.", reply_markup=create_start_keyboard())
 
 
 @router.message(StateFilter(MenuEditStates.pick_remove_item))
@@ -1240,7 +1240,7 @@ async def menu_pick_remove_item(message: Message, state: FSMContext):
 
     await menu_delete_item(picked)
     await state.clear()
-    await message.answer("🗑 Удалено.", reply_markup=create_main_keyboard())
+    await message.answer("🗑 Удалено.", reply_markup=create_start_keyboard())
 
 
 # ---------------- Stats button (DEMO preview for non-admin) ----------------
@@ -1248,9 +1248,9 @@ async def menu_pick_remove_item(message: Message, state: FSMContext):
 async def stats_button(message: Message):
     if message.from_user.id != ADMIN_ID:
         if DEMO_MODE:
-            await message.answer(demo_stats_preview_text(), reply_markup=create_main_keyboard())
+            await message.answer(demo_stats_preview_text(), reply_markup=create_start_keyboard())
         else:
-            await message.answer("📊 Статистика доступна администратору.", reply_markup=create_main_keyboard())
+            await message.answer("📊 Статистика доступна администратору.", reply_markup=create_start_keyboard())
         return
 
     try:
@@ -1272,16 +1272,16 @@ async def stats_button(message: Message):
             f"Выручка всего: <b>{total_rev}₽</b>\n\n"
             "<b>По позициям:</b>\n" + "\n".join(lines)
         )
-        await message.answer(text, reply_markup=create_main_keyboard())
+        await message.answer(text, reply_markup=create_start_keyboard())
     except Exception:
-        await message.answer("❌ Ошибка статистики", reply_markup=create_main_keyboard())
+        await message.answer("❌ Ошибка статистики", reply_markup=create_start_keyboard())
 
 
 # ---------------- Cart show/clear/cancel ----------------
 @router.message(F.text == BTN_CART)
 async def cart_button(message: Message, state: FSMContext):
     if not is_cafe_open():
-        await message.answer(get_closed_message(), reply_markup=create_main_keyboard())
+        await message.answer(get_closed_message(), reply_markup=create_start_keyboard())
         return
     await _show_cart(message, state)
 
@@ -1295,7 +1295,7 @@ async def clear_cart(message: Message, state: FSMContext):
 @router.message(F.text == BTN_CANCEL_ORDER)
 async def cancel_order(message: Message, state: FSMContext):
     await state.clear()
-    await message.answer("❌ Заказ отменён.", reply_markup=create_main_keyboard())
+    await message.answer("❌ Заказ отменён.", reply_markup=create_start_keyboard())
 
 
 # ---------------- Cart edit ----------------
@@ -1303,7 +1303,7 @@ async def cancel_order(message: Message, state: FSMContext):
 async def edit_cart(message: Message, state: FSMContext):
     cart = _get_cart(await state.get_data())
     if not cart:
-        await message.answer("Корзина пустая.", reply_markup=create_main_keyboard())
+        await message.answer("Корзина пустая.", reply_markup=create_start_keyboard())
         return
     await state.set_state(OrderStates.cart_edit_pick_item)
     await message.answer("Выберите позицию:", reply_markup=create_cart_pick_item_keyboard(cart))
@@ -1408,7 +1408,7 @@ async def open_client_menu(message: Message, state: FSMContext):
 async def _start_add_item(message: Message, state: FSMContext, drink: str):
     price = MENU.get(drink)
     if price is None:
-        await message.answer("Этой позиции уже нет.", reply_markup=create_main_keyboard())
+        await message.answer("Этой позиции уже нет.", reply_markup=create_start_keyboard())
         return
 
     cart = _get_cart(await state.get_data())
@@ -1587,7 +1587,7 @@ async def ready_time(message: Message, state: FSMContext):
 async def booking_start(message: Message, state: FSMContext):
     await state.clear()
     if not is_cafe_open():
-        await message.answer(get_closed_message(), reply_markup=create_main_keyboard())
+        await message.answer(get_closed_message(), reply_markup=create_start_keyboard())
         return
 
     await state.set_state(BookingStates.waiting_for_datetime)
@@ -1601,7 +1601,7 @@ async def booking_start(message: Message, state: FSMContext):
 async def booking_datetime(message: Message, state: FSMContext):
     if message.text == BTN_CANCEL:
         await state.clear()
-        await message.answer("Ок, бронирование отменено.", reply_markup=create_main_keyboard())
+        await message.answer("Ок, бронирование отменено.", reply_markup=create_start_keyboard())
         return
 
     m = re.match(r"(\d{1,2})\.(\d{1,2})\s+(\d{1,2}):(\d{2})", message.text or "")
@@ -1626,7 +1626,7 @@ async def booking_datetime(message: Message, state: FSMContext):
 async def booking_people(message: Message, state: FSMContext):
     if message.text == BTN_CANCEL:
         await state.clear()
-        await message.answer("Ок, бронирование отменено.", reply_markup=create_main_keyboard())
+        await message.answer("Ок, бронирование отменено.", reply_markup=create_start_keyboard())
         return
 
     try:
@@ -1646,7 +1646,7 @@ async def booking_people(message: Message, state: FSMContext):
 async def booking_finish(message: Message, state: FSMContext):
     if message.text == BTN_CANCEL:
         await state.clear()
-        await message.answer("Ок, бронирование отменено.", reply_markup=create_main_keyboard())
+        await message.answer("Ок, бронирование отменено.", reply_markup=create_start_keyboard())
         return
 
     data = await state.get_data()
@@ -1657,7 +1657,7 @@ async def booking_finish(message: Message, state: FSMContext):
     booking_id = str(int(time.time()))[-6:]
     user_id = message.from_user.id
 
-    await message.answer("✅ Бронь отправлена админу.", reply_markup=create_main_keyboard())
+    await message.answer("✅ Бронь отправлена админу.", reply_markup=create_start_keyboard())
 
     admin_msg = (
         f"📅 <b>НОВАЯ БРОНЬ #{booking_id}</b> | {html.quote(CAFE_NAME)}\n\n"
@@ -2443,12 +2443,12 @@ async def any_text_message(message: Message, state: FSMContext):
     text = (message.text or "").strip()
     if text in MENU:
         if not is_cafe_open():
-            await message.answer(get_closed_message(), reply_markup=create_main_keyboard())
+            await message.answer(get_closed_message(), reply_markup=create_start_keyboard())
             return
         await _start_add_item(message, state, text)
         return
 
-    await message.answer("Не понял. Используйте кнопки меню.", reply_markup=create_main_keyboard())
+    await message.answer("Не понял. Используйте кнопки меню.", reply_markup=create_start_keyboard())
 
 
 # ---------------- Startup / webhook ----------------
